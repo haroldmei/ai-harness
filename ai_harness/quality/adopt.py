@@ -41,7 +41,6 @@ GATES_RE = re.compile(r"^GATES=\((?P<names>[^)]*)\)", re.M)
 REQUIRED_BLOCK_RE = re.compile(r"declare\s+-A\s+REQUIRED_BY_TIER=\((?P<body>.*?)\n\)", re.S)
 REQUIRED_ROW_RE = re.compile(r"\[(?P<tier>\w+)\]=\"(?P<names>[^\"]*)\"")
 STACK_RE = re.compile(r"STACK_GATES=\((?P<names>[^)]*)\)")
-HOOK_RE = re.compile(r"^\s*if\s+\[\[\s+-x\s+(?P<hook>[\w./-]+\.sh)\s+\]\]", re.M)
 
 DEFAULT_TIMEOUT_S = 3600
 TIMEOUT_HEADROOM = 4
