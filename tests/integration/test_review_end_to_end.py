@@ -181,7 +181,11 @@ async def test_the_whole_path_runs_against_real_git(tmp_path: Path, bare_origin:
 
     git = GitCLI(root=work)
     base = (await git.rev_parse("HEAD")).unwrap()
-    await git.commit_all("add a retry")
+    # unwrap(), not a bare call: discarding this Outcome is how the original version of this
+    # test passed locally (ambient git config) and failed on a fresh CI runner with an empty
+    # diff and no error anywhere.
+    committed = (await git.commit_all("add a retry")).unwrap()
+    assert committed is not None, "the harness must be able to commit without a host identity"
     head = (await git.rev_parse("HEAD")).unwrap()
     diff = (await git.run("diff", f"{base}..{head}")).unwrap().stdout
     assert "retry()" in diff

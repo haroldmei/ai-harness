@@ -69,11 +69,29 @@ class GitCLI:
     binary: str = "git"
     timeout_s: float = 300.0
     env: dict[str, str] = field(default_factory=dict)
+    author_name: str = "ai-harness"
+    author_email: str = "harness@invalid.local"
+    """The harness commits as itself.
+
+    Inheriting the host's ``user.name``/``user.email`` looks harmless on a developer machine
+    and fails on a fresh worker, which has no global git config at all: ``git commit`` exits
+    non-zero, no commit is made, and a caller that ignores the Outcome sees an empty diff and
+    no error. CI found exactly that. Identity is passed per-invocation with ``-c`` so it also
+    cannot be changed underneath a run by an unrelated config edit.
+    """
 
     # ── plumbing ─────────────────────────────────────────────────────────────────
 
+    def _identity(self) -> list[str]:
+        return [
+            "-c",
+            f"user.name={self.author_name}",
+            "-c",
+            f"user.email={self.author_email}",
+        ]
+
     async def run(self, *args: str, cwd: Path | None = None) -> Outcome[CommandResult]:
-        argv = [self.binary, *args]
+        argv = [self.binary, *self._identity(), *args]
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv,
