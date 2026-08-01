@@ -228,8 +228,17 @@ def test_replay_emits_the_decision_sequence(tmp_path: Path) -> None:
     assert all(line["idempotency_key"] for line in lines)
 
 
-def test_nothing_reads_shadow_state_to_make_a_decision_yet(tmp_path: Path) -> None:
-    """Phase 1 is write-only by design: the rollback is "stop calling the helper"."""
+def test_only_the_layers_that_should_touch_durable_state_do(tmp_path: Path) -> None:
+    """Who may reach the store, and why the set is exactly this.
+
+    Phase 1 shipped this as "nothing reads shadow state at all". Phase 2 legitimately widens
+    it: the supervisor *is* the thing that reads a run and advances it. What has not changed —
+    and what the Phase 1 rollback still rests on — is that the shell pipeline remains
+    authoritative, the recorder cannot fail it, and a shadow run writes nothing to the forge.
+    Those three are asserted elsewhere in this file and in the shadow-mode suite.
+
+    Widening this set again should require the same deliberate edit, which is the point.
+    """
     import subprocess
 
     root = Path(__file__).resolve().parents[2]
@@ -238,7 +247,7 @@ def test_nothing_reads_shadow_state_to_make_a_decision_yet(tmp_path: Path) -> No
         capture_output=True,
         text=True,
     ).stdout.split()
-    allowed = {"persistence", "cli"}
+    allowed = {"persistence", "cli", "orchestration"}
     for reader in readers:
         relative = Path(reader).relative_to(root / "ai_harness")
         assert relative.parts[0] in allowed, f"{relative} reads durable state before Phase 4"

@@ -61,6 +61,10 @@ forbidden_modules =
 [importlinter:contract:structured-output-has-one-caller]
 name = call_structured has exactly one caller
 type = forbidden
+; Direct imports only. A subgraph reaches call_structured *through* an agent by design — that
+; is the layering. What must never happen is a subgraph building its own prompt and parsing its
+; own output, which is a direct import of this module.
+allow_indirect_imports = True
 source_modules =
     ai_harness.subgraphs
     ai_harness.orchestration

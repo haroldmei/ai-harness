@@ -12,7 +12,7 @@ gates, and proposes the result — unattended, resumable, and bounded in dollars
 * **The decisions**: [`docs/decisions/0001-adopted-defaults.md`](docs/decisions/0001-adopted-defaults.md)
   — the fourteen open questions of §27, answered.
 
-## Status — Phases 0 and 1 are implemented
+## Status — Phases 0, 1 and 2 are implemented
 
 **Phase 0** changes no behaviour anywhere: the kernel, the typed contracts, the
 structured-output layer, gate discovery, and a read-only CLI that runs the repository's *own*
@@ -20,8 +20,15 @@ gates. The rollback is "delete the package".
 
 **Phase 1** adds the adapters and the state store. The shell pipeline stays authoritative and
 keeps reading labels; it additionally calls `agent record` at each stage boundary, so runs,
-checkpoints, counters and cost become queryable *before any behaviour moves*. Nothing reads that
-state to make a decision until Phase 4 — the rollback is "stop calling the helper".
+checkpoints, counters and cost become queryable *before any behaviour moves*. The rollback is
+"stop calling the helper".
+
+**Phase 2** adds the orchestration core and the first ported state. The seven-state machine, the
+pure router, the sandbox, the context layer and the reviewer all exist and run — but in **shadow
+mode**: the Python reviewer produces a verdict and records it, while the shell path keeps posting
+and owning the label. `ShadowComparator` diffs the *decisions*, and the cutover requires
+agreement above threshold **and** every disagreement explained. The rollback is one flag
+(`profile.engine`).
 
 ```bash
 uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev]"
@@ -54,6 +61,11 @@ one schema, so a mixed rollout cannot disagree about `PR_MAX_ROUNDS` or `QG_GATE
 | `providers/git/` | One git client: worktrees, the three isolation strategies, generated-file rebase resolution, compare-and-swap push |
 | `providers/forge/` | The `Forge` protocol, a REST GitHub adapter, labels as a projection, and a `FakeForge` that misbehaves on purpose |
 | `workspace/` | Worktree materialisation with the three resume guards, deps provisioning **and verification**, and the evidence-first teardown with a 72h sweeper |
+| `orchestration/` | The §9 transition table as data, a pure LLM-free router, the supervisor loop with breakers-before-spend and atomic checkpoints, and the shadow comparator |
+| `security/` | Probed container/bubblewrap isolation that degrades loudly, path containment, and a sandbox environment with no credentials in it |
+| `context/` | The trust boundary as a *type*, tiered assembly with pinned facts, diff bundling with elision markers, and repo-native retrieval (no vector store) |
+| `agents/` | The `Agent` base (the only caller of `call_structured`), the roster that refuses a self-review, and the reviewer with its versioned prompt |
+| `subgraphs/` | `REVIEW`, end to end: isolated, bounded, idempotent on `(commit, round)` |
 
 ### Invariants under test
 
@@ -74,7 +86,12 @@ harness's own history (Appendix B of the design):
 * `npm ci` exiting 0 is not evidence the install landed;
 * work is tagged before it is gated, so cleanup cannot orphan a commit;
 * a push is a compare-and-swap — if the base moved, it fails rather than forcing;
-* the recorder cannot fail the shell stage that calls it.
+* the recorder cannot fail the shell stage that calls it;
+* untrusted content cannot enter the instruction section — it is a different *type*;
+* a reviewer and an implementer sharing a model cannot be configured at all;
+* an empty envelope consumes no review round, and the streak is bounded at two;
+* a verdict for an unchanged commit is reused rather than re-bought;
+* nothing raises across a state boundary — the run parks, the process lives.
 
 ## Development
 

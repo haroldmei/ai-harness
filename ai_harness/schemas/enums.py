@@ -183,3 +183,32 @@ class DiscoveryRung(StrEnum):
     CI_CONFIG = "ci_config"
     MANIFEST = "manifest"
     NONE = "none"
+
+
+class Signal(StrEnum):
+    """What a successful subgraph concluded — the vocabulary the router routes on.
+
+    This lives in ``schemas`` rather than in ``orchestration`` because a subgraph must be able
+    to *say* one without importing the supervisor that reads it. The import contract caught the
+    inversion the moment it was written, which is the point of having it.
+    """
+
+    ADVANCE = "advance"
+    """The state did its job; take the happy edge."""
+    REPLAN = "replan"
+    """Nothing usable was produced but the plan can be reconsidered."""
+    FIX = "fix"
+    """A defect the implementer can own — go back to IMPLEMENT."""
+    REGATE = "regate"
+    """The union changed; VALIDATE must judge it again."""
+    REPIN = "repin"
+    """The base moved under us; PREPARE re-pins it."""
+    RETRY_SAME = "retry_same"
+    """Re-enter this state, budget-consuming (the model produced unusable output)."""
+    NEEDS_APPROVAL = "needs_approval"
+    BLOCKED = "blocked"
+    ESCALATE = "escalate"
+    DELIVERED = "delivered"
+    MERGED = "merged"
+    ABANDONED = "abandoned"
+    """Someone else owns this work — not a failure, and not our run."""
