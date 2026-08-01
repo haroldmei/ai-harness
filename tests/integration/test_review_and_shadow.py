@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -291,27 +293,49 @@ def test_an_unexplained_verdict_disagreement_blocks_the_cutover() -> None:
     assert not comparator.may_cut_over()
 
 
-def test_cutover_requires_both_the_rate_and_the_explanations() -> None:
+def test_cutover_requires_the_week_the_rate_and_the_explanations() -> None:
+    """All three parts of §24 Phase 2's gate, and each one alone is not enough.
+
+    The window joined the gate when comparisons became durable: a rate computed over four
+    reviews in one afternoon is not "at least a week of real PRs observed", and a gate that
+    only checked the rate would have called it one.
+    """
+    start = datetime(2026, 1, 1, tzinfo=UTC)
     comparator = ShadowComparator()
-    for _ in range(19):
+
+    def _agree(day: int) -> None:
         comparator.observe(
-            compare(
-                run_id="r",
-                head_sha="h",
-                round_=1,
-                shell=_decision("shell", Verdict.APPROVE),
-                python=_decision("python", Verdict.APPROVE),
+            replace(
+                compare(
+                    run_id=f"r{day}",
+                    head_sha="h",
+                    round_=1,
+                    shell=_decision("shell", Verdict.APPROVE),
+                    python=_decision("python", Verdict.APPROVE),
+                ),
+                observed_at=start + timedelta(hours=day * 10),
             )
         )
+
+    for day in range(4):
+        _agree(day)
+    assert comparator.agreement_rate == 1.0
+    assert not comparator.may_cut_over(), "perfect agreement over a day and a half is not a week"
+
+    for day in range(4, 20):
+        _agree(day)
     assert comparator.may_cut_over()
 
     comparator.observe(
-        compare(
-            run_id="r",
-            head_sha="h",
-            round_=1,
-            shell=_decision("shell", Verdict.APPROVE),
-            python=_decision("python", Verdict.REQUEST_CHANGES),
+        replace(
+            compare(
+                run_id="r-late",
+                head_sha="h",
+                round_=1,
+                shell=_decision("shell", Verdict.APPROVE),
+                python=_decision("python", Verdict.REQUEST_CHANGES),
+            ),
+            observed_at=start + timedelta(days=9),
         )
     )
     assert comparator.agreement_rate >= 0.95

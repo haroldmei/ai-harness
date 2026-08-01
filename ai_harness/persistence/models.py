@@ -277,6 +277,47 @@ class ArtefactRow(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ComparisonRow(Base):
+    """One shadow observation, durable.
+
+    §24 Phase 2 gates the cutover on *a week* of agreement, and a week is longer than any
+    process lives. Holding observations in memory made the criterion unsatisfiable rather than
+    merely unstarted: a restart, a deploy or a crash silently reset the evidence to zero and the
+    report would still print an agreement rate, computed over whatever survived.
+
+    ``explanation`` is the column the cutover actually blocks on. A disagreement is not a
+    regression — the shell reviewer's known defects are in the comparison set — so what must be
+    empty before a flip is *unexplained* disagreements, and an explanation is a human writing in
+    this column.
+    """
+
+    __tablename__ = "shadow_comparisons"
+    __table_args__ = (
+        UniqueConstraint("run_id", "head_sha", "round", name="uq_comparison_observation"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    repo: Mapped[str] = mapped_column(String(255), index=True)
+    head_sha: Mapped[str] = mapped_column(String(64), index=True)
+    round: Mapped[int] = mapped_column(Integer, default=1)
+
+    agreement: Mapped[str] = mapped_column(String(32), index=True)
+    shell_verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    shell_blocking: Mapped[int] = mapped_column(Integer, default=0)
+    shell_note: Mapped[str] = mapped_column(Text, default="")
+    python_verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    python_blocking: Mapped[int] = mapped_column(Integer, default=0)
+    python_downgraded: Mapped[bool] = mapped_column(Boolean, default=False)
+    python_note: Mapped[str] = mapped_column(Text, default="")
+
+    explanation: Mapped[str] = mapped_column(Text, default="")
+    shell_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal(0))
+    python_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal(0))
+    """§24.1's "cost increases" risk row needs both paths priced on the same reviews."""
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 ALL_TABLES = (
     RunRow,
     CheckpointRow,
@@ -285,4 +326,5 @@ ALL_TABLES = (
     ApprovalRow,
     CostRow,
     ArtefactRow,
+    ComparisonRow,
 )

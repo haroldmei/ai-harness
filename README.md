@@ -77,6 +77,11 @@ uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev]"
 
 .venv/bin/agent work --path .           # claim ready work, advance one boundary, exit
 .venv/bin/agent tick --repo owner/name  # reconcile, admit, dispatch, sweep — one pass
+.venv/bin/agent install --dry-run       # what the systemd units would be, before writing them
+.venv/bin/agent preflight               # is it safe to flip the engine flag right now?
+
+.venv/bin/agent shadow observe 412      # run both reviewers on PR #412; the Python path writes nothing
+.venv/bin/agent shadow report --gate    # the §24 cutover gate — exits non-zero while blocked
 
 .venv/bin/agent record --repo o/n --issue 7 --stage reviewer   # called BY the shell stages
 .venv/bin/agent ls                      # every run and its (state, status)
@@ -177,7 +182,14 @@ harness's own history (Appendix B of the design):
 * "who calls X" is answered from the call graph — a text match that is not a call is excluded;
 * a stale vector entry is down-weighted and never cited with a line number;
 * a repository that is not cut over cannot be driven, and a missing credential is refused at
-  startup rather than after a claim has spent a lease.
+  startup rather than after a claim has spent a lease;
+* a shadow observation survives the process that made it, and re-observing the same review does
+  not double-count it;
+* the cutover gate requires **a week**, a rate *and* zero unexplained disagreements — perfect
+  agreement over one afternoon is not evidence;
+* an explanation written by a human is never erased by an automatic re-run;
+* `agent install` run twice writes nothing the second time, and refuses to enable a timer for a
+  repository that is not cut over.
 
 ## Development
 

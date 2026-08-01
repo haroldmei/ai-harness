@@ -30,16 +30,18 @@ from ai_harness.persistence.models import (
     ApprovalRow,
     Base,
     CheckpointRow,
+    ComparisonRow,
     CostRow,
     FingerprintRow,
     RunRow,
 )
 from ai_harness.schemas.approval import ApprovalDecision, ApprovalRequest
 from ai_harness.schemas.checkpoint import Checkpoint
-from ai_harness.schemas.enums import Capability, Disposition, RunStatus, State
+from ai_harness.schemas.enums import Capability, Disposition, RunStatus, State, Verdict
 from ai_harness.schemas.errors import ErrorInfo
 from ai_harness.schemas.job import JobRequest
 from ai_harness.schemas.run import Counters, Run
+from ai_harness.schemas.shadow import Agreement, Comparison, Decision
 
 T = TypeVar("T")
 
@@ -423,8 +425,116 @@ class SqlStore:
 
         return await self._run(_pending)
 
+    # ── shadow comparisons (§24 Phase 2) ─────────────────────────────────────────
+
+    async def observe(self, comparison: Comparison, *, repo: str = "") -> Comparison:
+        """Record one observation. Idempotent on ``(run_id, head_sha, round)``.
+
+        Idempotent because the shadow runner may be invoked twice for the same review — a retry,
+        an overlapping nightly job, a rerun after a crash — and double-counting an agreement
+        would inflate the very rate the cutover gates on. Re-observing *updates*, so a later run
+        with a better explanation wins.
+        """
+        now = comparison.observed_at or self._clock.now()
+
+        def _observe(session: Session) -> Comparison:
+            row = session.scalars(
+                select(ComparisonRow).where(
+                    ComparisonRow.run_id == comparison.run_id,
+                    ComparisonRow.head_sha == comparison.head_sha,
+                    ComparisonRow.round == comparison.round,
+                )
+            ).first()
+            if row is None:
+                row = ComparisonRow(
+                    run_id=comparison.run_id,
+                    head_sha=comparison.head_sha,
+                    round=comparison.round,
+                    observed_at=now,
+                )
+                session.add(row)
+            row.repo = repo or comparison.repo
+            row.agreement = comparison.agreement.value
+            row.shell_verdict = comparison.shell.verdict.value if comparison.shell.verdict else None
+            row.shell_blocking = comparison.shell.blocking
+            row.shell_note = comparison.shell.note
+            row.shell_usd = comparison.shell.usd
+            row.python_verdict = (
+                comparison.python.verdict.value if comparison.python.verdict else None
+            )
+            row.python_blocking = comparison.python.blocking
+            row.python_downgraded = comparison.python.downgraded
+            row.python_note = comparison.python.note
+            row.python_usd = comparison.python.usd
+            if comparison.explanation:
+                # An explanation is never *cleared* by a re-observation: it is written by a
+                # human, and the automatic re-run has nothing better to say than they did.
+                row.explanation = comparison.explanation
+            session.flush()
+            return _to_comparison(row)
+
+        return await self._run(_observe)
+
+    async def explain(self, run_id: str, head_sha: str, round_: int, explanation: str) -> bool:
+        """Account for a disagreement. The cutover blocks until every one has this."""
+
+        def _explain(session: Session) -> bool:
+            row = session.scalars(
+                select(ComparisonRow).where(
+                    ComparisonRow.run_id == run_id,
+                    ComparisonRow.head_sha == head_sha,
+                    ComparisonRow.round == round_,
+                )
+            ).first()
+            if row is None:
+                return False
+            row.explanation = explanation
+            return True
+
+        return await self._run(_explain)
+
+    async def comparisons(
+        self, *, repo: str | None = None, since: datetime | None = None
+    ) -> list[Comparison]:
+        def _load(session: Session) -> list[Comparison]:
+            query = select(ComparisonRow).order_by(ComparisonRow.observed_at.asc())
+            if repo:
+                query = query.where(ComparisonRow.repo == repo)
+            if since is not None:
+                query = query.where(ComparisonRow.observed_at >= since)
+            return [_to_comparison(row) for row in session.scalars(query).all()]
+
+        return await self._run(_load)
+
 
 # ── mapping ──────────────────────────────────────────────────────────────────────
+
+
+def _to_comparison(row: ComparisonRow) -> Comparison:
+    return Comparison(
+        run_id=row.run_id,
+        repo=row.repo,
+        head_sha=row.head_sha,
+        round=row.round,
+        agreement=Agreement(row.agreement),
+        explanation=row.explanation,
+        observed_at=row.observed_at,
+        shell=Decision(
+            engine="shell",
+            verdict=Verdict(row.shell_verdict) if row.shell_verdict else None,
+            blocking=row.shell_blocking,
+            note=row.shell_note,
+            usd=row.shell_usd,
+        ),
+        python=Decision(
+            engine="python",
+            verdict=Verdict(row.python_verdict) if row.python_verdict else None,
+            blocking=row.python_blocking,
+            downgraded=row.python_downgraded,
+            note=row.python_note,
+            usd=row.python_usd,
+        ),
+    )
 
 
 def _group(rows: list[CostRow], key: Callable[[CostRow], str]) -> dict[str, str]:
