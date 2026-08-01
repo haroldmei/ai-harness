@@ -1,82 +1,71 @@
-# Phase 8 — Retiring the shell orchestrator
+# Phase 8 — Retiring the shell completely
 
-Status: **accepted, revised 2026-08-02** · Date: 2026-08-01 · Tracked by
+Status: **accepted** · Date: 2026-08-01 · Tracked by
 [#105](https://github.com/haroldmei/ai-harness/issues/105) · Architecture:
 [`ai-harness-python-architecture.md`](../../ai-harness-python-architecture.md) · Decisions:
 [0001](../decisions/0001-adopted-defaults.md), [0002](../decisions/0002-self-hosted-inference.md)
 
 ## Objective
 
-The 21 shell files the Python engine replaced go away, and the harness loses nothing it needs.
-The design has always said the shell *driver* retires; what it never said is how the last file
-leaves, and the first draft of this plan got the boundary wrong.
+`scripts/` — 91 shell files, 1.6 MB — goes away, and the harness loses nothing it needs. The
+design has always said the shell driver retires; what it has never said is *how the last file
+leaves*, and the honest reading of the current code is that two of the three things in that
+directory are not retirable by porting them at all.
 
 The claim to falsify:
 
-> **Every capability the Python engine replaced can be shown to be replaced before its script is
-> deleted — and everything else in `scripts/` is live tooling that was never in scope.**
-
-## Revision, 2026-08-02
-
-The first draft assumed `scripts/quality-gates.sh` and the 38 tool scripts around it belonged to
-a separate app-builder *product* that would get its own repository, and that the harness would
-then discover them there at rung 2. **That was wrong, and the evidence was in the tree.**
-
-`.claude/skills/build-product-v2/SKILL.md` invokes `scripts/state-init.sh`,
-`scripts/state-set.sh`, `scripts/state-decide.sh`, `scripts/route-failure.sh` and
-`scripts/quality-gates.sh` as **relative paths in the working tree**, and `quality-gates.sh`
-reads `state/state.json` from that same tree. Nothing copies them anywhere. Sixteen scripts are
-invoked by live skills.
-
-So the harness *is* the app-builder, it works on many repositories, and `scripts/` is its own
-runtime rather than a tenant. There is no single destination to relocate to, and relocation was
-never the right verb. **D1 is superseded by D2.**
-
-What survives from the first draft is the part that was about the ladder rather than about
-ownership: the harness must keep being able to meet a repository's own gate tooling (§19.1), and
-this repository must not have its own gates confused with a target's — which was #96, and is
-done.
+> **Every capability `scripts/` provides is either already in the package, belongs in a different
+> repository, or is not a capability anybody needs — and each one can be shown to be so before
+> the file is deleted.**
 
 ## What "the shell" actually is here
 
-101 shell files, and only 21 of them are in scope. The classification is by **who calls it**,
-established by grepping the live skills rather than by reading names:
+Not one thing. Three, with different owners and different exits:
 
 | Class | Files | Who calls it today | Exit |
 |---|---:|---|---|
-| **PR-pipeline and scout stages** — `agent-inbox.sh`, `agent-pr-reviewer.sh`, `agent-pr-fixer.sh`, `agent-pr-merger.sh`, `agent-pipeline.sh`, `agent-triage-failure.sh`, `agent-scout.sh`, and the three `*-setup.sh` | 10 | systemd timers on the host; nothing in the package, no live skill | **Ported.** Deleted once the cutover is proven and the rollback is re-based (S4) |
-| **Their tests** — `agent-*.test.sh` | 11 | nothing; CI never invokes them | **Retired with what they test** (S4) |
-| **The app-builder's runtime** — `quality-gates.sh`, `state-init.sh`, `state-set.sh`, `state-decide.sh`, `route-failure.sh`, `verify-loop.sh`, `adversarial-loop.sh`, `run-e2e.sh`, `iteration-*.sh`, `release-train.sh`, `coverage.sh`, … | 80 | `build-product-v2` and 15 other live skills, in whatever tree the harness is building | **Stays.** Never legacy; the Python engine replaced the PR loop, not the product builder |
+| **Orchestrator stages** — `agent-inbox.sh`, `agent-pr-reviewer.sh`, `agent-pr-fixer.sh`, `agent-pr-merger.sh`, `agent-pipeline.sh`, `agent-triage-failure.sh`, `state-*.sh` | 14 | systemd timers on the host; nothing in the package | **Ported.** Deleted once the cutover is proven and the rollback is re-based (S4) |
+| **Gate and tool spine** — `quality-gates.sh` (1 492 lines, 22 gates), `verify-loop.sh`, `coverage.sh`, `run-e2e.sh`, `i18n-check.sh`, `seed-integrity.sh`, `release-train.sh`, `local-deploy.sh`, `canary-deploy.sh`, … | 38 | `ShellGateAdapter` (rung 2) and `providers/deploy/script.py` | **Relocated.** It is a *product's* toolchain sitting in the harness's repository (S2) |
+| **Shell test suite** — `*.test.sh` | 39 | nothing; CI never invokes them | **Retired with what they test** (S4) |
 
-Four references from the live set back into the retirable one were checked individually and are
-**comments and citations**, not invocations: `shellcheck-gate.sh`'s baseline notes,
-`release-train.sh:661`'s "callers of this pattern", and `red-baseline.sh`'s history. Deleting the
-stages does not break them.
+The middle row is the one the current code argues about with itself, and resolving that argument
+is most of this design.
 
-One real coupling exists and is a deliverable of S4 rather than a blocker: the `iterate` skill
-reads `ITERATE_MODE`, and `agent-inbox.sh` is the only thing that sets it to `single-issue`.
-Whatever drives an inbox build after the deletion has to set it.
+## The reframe: §19.1 is about *the repository being worked on*
 
-## What §19.1 does and does not settle
+`quality/adapters/shell.py` opens with a flat statement:
 
-`quality/adapters/shell.py` says keeping `quality-gates.sh` is *"not a migration compromise, it
-is the permanent design (§19.1)"*, and under D2 that is simply true — it is the app-builder's own
-gate runner for the trees it builds, not a compromise about anything.
+> This is not a migration compromise, it is the permanent design (§19.1). `quality-gates.sh` is
+> 1,492 tuned lines that already emit `{gate, status, reason, duration_s}` from `--json`, so **no
+> change to the shell is required** for the port to consume it.
 
-§19.1's first line is still the load-bearing one: *"The repository owns its gates. The harness
-discovers, orders, runs, and interprets them."* It settles two things and neither of them is
-about `scripts/`:
+That reads like a bar to retirement. It is not, and §19.1 says why in its own first line: *"The
+repository owns its gates. The harness discovers, orders, runs, and interprets them."* The
+permanent thing is the **adapter and the ladder** — the harness's refusal to reimplement whatever
+gate tooling a target repository happens to have. It is a statement about `make check` in
+somebody else's repo as much as about `quality-gates.sh`.
 
-* a **target** repository's gate tooling is discovered and called, never reimplemented — which is
-  why the ladder, `ShellGateAdapter` and `providers/deploy/script.py` are permanent;
-* **this** repository's gates are its own, which is why they are now declared at rung 1 (#96).
-  Before that, the ladder found the app-builder's runtime in the app-builder's own tree and
-  reported 22 gates that gate *products*, not the harness. That was never a tenant — it was the
-  tool's runtime being indistinguishable from a target's, in the one tree where both are present.
+Which turns the question around. `scripts/quality-gates.sh` is the *app-builder product's* gate
+spine: it sources `scripts/lib/state-shard.sh`, reads `state/state.json`, and gates
+`iteration-immutable`, `seed-integrity`, `mobile-e2e`, `visual`. This repository has no `state/`
+directory. The spine is not this repository's gates — it is a tenant.
 
-So the principle is not in tension with retirement, because retirement is now a smaller thing:
+And a tenant is exactly what Q2 forbids:
 
-> **The Python engine replaced the PR loop. Phase 8 deletes what it replaced, and nothing else.**
+> **Q2 — first targets, the same host project or external repos? Assume external.** It forces
+> `RepoProfile` to be honest from day one and prevents re-introducing the coupling of W12.
+> *A test fails if any host-project string reappears in the package.*
+
+The package passes that test. The *repository* does not: it carries the host project's toolchain
+in a directory the harness's own discovery ladder then finds and treats as this repo's gate
+entry point. Running `agent gates discover .` today reports 22 gates belonging to a product that
+is not here. That is W12 with a directory instead of an import.
+
+So the design principle is not violated by retirement — it is **finally satisfied** by it:
+
+> **Retirement is relocation and declaration, never reimplementation.** Every shell file either
+> moves to the repository that owns it, where the harness keeps calling it through the ladder, or
+> is replaced by a *declaration* the harness already knows how to execute.
 
 ## The principle audit
 
@@ -95,17 +84,15 @@ Every rule this retirement could break, and what keeps it intact.
 
 ## End state
 
-- No `agent-*.sh` and no `agent-*.test.sh` in this repository — 21 files, the ones the Python
-  engine replaced.
-- `scripts/` still exists and is still live: `build-product-v2` and fifteen other skills call it,
-  in whatever tree the harness is building.
-- `.harness/gates.yaml` declares this repository's own gates; `agent gates discover .` reports
-  rung 1 rather than the app-builder's product gates. **Done (#96).**
-- `ENTRY_POINTS` still names `scripts/quality-gates.sh` — the ladder, for any repository the
-  harness works on, including the ones it builds.
-- `ShellGateAdapter` and `providers/deploy/script.py` unchanged and unretired.
-- The stages exist only at the tag `shell-final`, restorable in one command.
-- `agent retire check` refuses to call the orchestrator retired while any precondition is unmet.
+- No `*.sh` in this repository. `scripts/` does not exist.
+- `.harness/gates.yaml` in this repository declares its real gates; `agent gates discover .`
+  reports rung 1 and five gates that are actually this repo's.
+- `ENTRY_POINTS` in `discovery.py` still names `scripts/quality-gates.sh` — as a *pattern* for
+  any target repo, alongside `make check`, `tox`, `nox`. That is the ladder, not a legacy.
+- `ShellGateAdapter` and `providers/deploy/script.py` remain, unchanged and unretired. They are
+  how the harness meets a repository on its own terms; nothing about them was ever legacy.
+- The shell orchestrator exists only at the tag `shell-final`, restorable in one command.
+- `agent retire check` exits non-zero if any precondition of the above is not met.
 
 ## Sequence
 
@@ -122,20 +109,25 @@ spine stops masquerading as this repository's contract.
 on nothing. The harness gates itself with its own machinery, which is also the first honest
 dogfood of the native runner.
 
-### S2 — ~~Relocate the spine~~ · superseded by D2
+### S2 — The product's spine moves to the product's repository
 
-**Void.** There is nothing to relocate: the spine is the app-builder's own runtime, invoked by
-live skills in the tree being built. What was built for this step keeps its value pointed
-*outward* rather than inward, which is where it was always more useful:
+The 38 tool scripts and their `lib/` are the app-builder's. They move to the app-builder's
+repository, where the harness discovers them at rung 2 exactly as it would in any external repo.
+Nothing is ported and nothing is rewritten.
 
-- **`agent gates adopt`** (#97) reads any repository's shell spine into a proposed
-  `.harness/gates.yaml`. For a repository the harness is asked to work on — one that has
-  `make check` or its own `quality-gates.sh` — this is how it gets a declaration without anybody
-  retyping the contract.
-- **`GateSpineComparator`** (#98) proves such a declaration is not weaker than the spine it
-  replaces, per gate, with the disqualifying set fixed before the run.
+New tooling, small and both worth having independently:
 
-Both landed. Neither is now on Phase 8's critical path; both are tools for target repositories.
+- **`agent gates adopt <repo>`** — read a shell spine's `GATES=(…)` registry (the reader already
+  exists: `discovery._shell_registry_names`) plus one `--json` scorecard, and emit an equivalent
+  `.harness/gates.yaml`. The output is a *proposal a human reviews*, never written autonomously —
+  the same rule as Q9's "propose gates in the MR body; never write CI config".
+- **`GateSpineComparator`** — the shadow pattern (#43, #91) applied to gates: run the shell spine
+  and the declared spine on the same commit and diff the scorecards gate by gate. A gate that
+  changes status, disappears, or silently becomes a skip is a disagreement, and the criterion is
+  the one the reviewers use — **every disagreement explained**, not zero disagreements.
+
+**Gate:** the app-builder repo has its spine, the harness reaches it through rung 2, and a full
+differential run over ≥5 commits is explained. Until then `scripts/` stays where it is.
 
 ### S3 — One repository actually runs on Python
 
@@ -146,28 +138,17 @@ timer installed and disabled — §24 Phase 4's rule, unchanged.
 every merged MR was produced by the Python path. This is Phase 7's exit criteria doing double
 duty; no new evidence is invented for Phase 8.
 
-### S4 — The stages and their tests go
+### S4 — The orchestrator and its tests go
 
-Delete the 10 `agent-*.sh` stages and the 11 `agent-*.test.sh`. Everything else in `scripts/`
-stays — it is live.
+Delete the 14 stages and the 39 `*.test.sh`. Delete `shadow_runner`'s verdict scraper and the
+`_shell_decision` path with them — the comparator keeps the two-reviewer form Phase 7 added
+(#91), which needs no shell. Delete `HarnessConfig.shell_env()` and `SHELL_ENV_NAMES`: the
+beachhead exists to stop two engines disagreeing about `PR_MAX_ROUNDS`, and one engine cannot
+disagree with itself.
 
-Two package-side deletions retire with them, and both are worth naming because leaving them is
-the more expensive mistake:
-
-* **`shadow_runner`'s verdict scraper.** `VERDICT_MARKERS` and `_shell_decision` read the shell
-  reviewer's verdict off a pull request — the log-scraping W13 exists to end. Its own docstring
-  sets the terms: *"It disappears when the shell reviewer does."* The two-reviewer form added for
-  #91 needs no shell.
-* **`HarnessConfig.shell_env()` and `SHELL_ENV_NAMES`.** The Phase 0 beachhead: one schema, two
-  engines, no drift about `PR_MAX_ROUNDS`. One engine cannot disagree with itself.
-
-And one integration point, which is the only live thread between the two sets: the `iterate`
-skill reads `ITERATE_MODE`, set to `single-issue` by `agent-inbox.sh` and by nothing else.
-Whatever drives an inbox build after the deletion must set it, or `iterate` silently runs its
-cold-start path against a single issue.
-
-**Gate:** the suite is green with the stages gone; `ITERATE_MODE` has a setter; every incident
-citation in a docstring survives — deleting the script must not delete the reason.
+**Gate:** the suite is green with no shell present anywhere, and a new contract test asserts it —
+*no file in `ai_harness/` may reference a `.sh` path outside `discovery.ENTRY_POINTS`*, which is
+the mechanical version of "the coupling does not come back" (the W12 test, extended).
 
 ### S5 — Replace the rollback before removing it
 
@@ -185,15 +166,13 @@ things that must exist before the deletion is merged, not after:
 PR through the shell path, confirm the branch is where the Python path left it. Rehearsed, not
 read; §24's word.
 
-### S6 — Say so
+### S6 — Delete, and say so
 
-`agent retire check` exits zero. Update `docs/runbooks/migration.md` (the rollback is the tag),
-`README.md` (Phase 8 status), and 0001's Q2 row — which closes differently than the first draft
-assumed: the coupling was never a tenant, and what fixed the discovery confusion was declaring
-this repository's own gates.
+Remove `scripts/`. Update `docs/runbooks/migration.md` (the rollback is now the tag), `README.md`
+(Phase 8 status), and `0001`'s Q2 row (the coupling is gone, and how it was closed).
 
-**Gate:** a repository whose PR loop is Python end to end, whose product-building runtime is
-still shell and still live, and which can still be rolled back.
+**Gate:** `agent retire check` exits zero. It is a script-free repository that can still gate
+itself, still discover somebody else's shell spine, and still be rolled back.
 
 ## What must not change
 
@@ -206,34 +185,10 @@ Stated because retirement is exactly the moment these get quietly taken as well:
   lets them be replaced one at a time, or never"* — and never is a legitimate answer.
 - **Rung 5 stays a hard escalation.** No repository merges ungated because a spine moved.
 
-## D1 — superseded
+## D1 — decided: relocate
 
-**Superseded by D2 on 2026-08-02.** Recorded here rather than deleted, because a decision that
-quietly disappears is indistinguishable from one that was never made.
-
-D1 asked where the app-builder's spine should go and answered "its own repository". The premise
-was wrong: there is no separate app-builder. The harness *is* it, `scripts/` is its runtime, and
-it will be used on many repositories rather than one.
-
-## D2 — the app-builder's runtime stays; only the PR loop retires
-
-Decided 2026-08-02. The harness is the app-builder and works on other repositories; the 80 live
-scripts are how it builds in a tree, and they were never what the Python engine replaced. Phase 8
-retires the 10 PR-pipeline and scout stages plus their 11 tests, and stops there.
-
-Two consequences worth stating as commitments:
-
-* **"no `*.sh` in this repository" is not the end state**, and any check that asserts it is
-  wrong. What can be asserted is narrower and truer: no `agent-*.sh`, and no package file
-  reaching for a script outside the ladder (#102).
-* **`agent gates adopt` and `GateSpineComparator` point outward.** They were built for a
-  relocation that is not happening, and they are more useful where they now apply — every
-  repository the harness is asked to work on that already has a gate spine.
-
-## The original D1 argument, kept for the record
-
-**Where does the app-builder's spine go? Its own repository.** Decided 2026-08-01, superseded
-2026-08-02.
+**Where does the app-builder's spine go? Its own repository.** Decided 2026-08-01; S2 is
+unblocked and the `legacy/` variant is dropped.
 
 The alternative — a marked `legacy/` directory here, excluded from discovery, archived at the tag
 and deleted at S6 — reaches the same end state while keeping the harness carrying a tenant for
@@ -267,9 +222,9 @@ Filed under [#105](https://github.com/haroldmei/ai-harness/issues/105):
 | Step | Issue |
 |---|---|
 | S1 | #96 — gates: this repository declares its own gates (rung 1) |
-| S2 | #97 — gates: `agent gates adopt` (landed; now a tool for target repos) |
-| S2 | #98 — gates: `GateSpineComparator` (landed; now a tool for target repos) |
-| — | #99 — Relocate the spine · **closed, void under D2** |
+| S2 | #97 — gates: `agent gates adopt` — a shell spine, proposed as a declaration |
+| S2 | #98 — gates: `GateSpineComparator` — the shadow pattern, applied to gates |
+| S2 | #99 — Relocate the product's gate and tool spine to its own repository |
 | S3 | #100 — Drive one repository on the Python engine for a full release cycle |
 | S4 | #101 — Delete the orchestrator stages, the shell test suite and the verdict scraper |
 | S4 | #102 — contracts: no package file may reference a `.sh` path outside the ladder |
