@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -34,14 +35,28 @@ from ai_harness.persistence.models import (
     CostRow,
     FingerprintRow,
     RunRow,
+    SpineComparisonRow,
 )
 from ai_harness.schemas.approval import ApprovalDecision, ApprovalRequest
 from ai_harness.schemas.checkpoint import Checkpoint
-from ai_harness.schemas.enums import Capability, Disposition, RunStatus, State, Verdict
+from ai_harness.schemas.enums import (
+    Capability,
+    Disposition,
+    GateStatus,
+    RunStatus,
+    State,
+    Verdict,
+)
 from ai_harness.schemas.errors import ErrorInfo
 from ai_harness.schemas.job import JobRequest
 from ai_harness.schemas.run import Counters, Run
 from ai_harness.schemas.shadow import Agreement, Comparison, Decision
+from ai_harness.schemas.spine import (
+    Difference,
+    GateDifference,
+    GateOutcome,
+    SpineComparison,
+)
 
 T = TypeVar("T")
 
@@ -364,6 +379,103 @@ class SqlStore:
 
         return await self._run(_summary)
 
+    # ── SpineComparisonStore (#98) ───────────────────────────────────────────────
+
+    async def record_spine(self, comparison: SpineComparison) -> SpineComparison:
+        """Record one commit's comparison. Idempotent on ``(repo, commit_sha, gate)``.
+
+        Re-comparing the same commit *updates*, so a later run with a better explanation wins and
+        a rerun after a crash does not double-count a disagreement the criterion is measured on.
+        An explanation already recorded is never overwritten by a re-run that has none — the
+        human's writing outlives the machine's.
+        """
+        at = comparison.observed_at or self._clock.now()
+
+        def _record(session: Session) -> None:
+            for difference in comparison.differences:
+                existing = session.scalars(
+                    select(SpineComparisonRow).where(
+                        SpineComparisonRow.repo == comparison.repo,
+                        SpineComparisonRow.commit_sha == comparison.commit_sha,
+                        SpineComparisonRow.gate == difference.gate,
+                    )
+                ).one_or_none()
+                explanation = difference.explanation or (existing.explanation if existing else "")
+                row = SpineComparisonRow(
+                    id=existing.id if existing else None,
+                    repo=comparison.repo,
+                    commit_sha=comparison.commit_sha,
+                    gate=difference.gate,
+                    kind=difference.kind.value,
+                    shell_status=difference.shell.status.value
+                    if difference.shell and difference.shell.status
+                    else None,
+                    declared_status=difference.declared.status.value
+                    if difference.declared and difference.declared.status
+                    else None,
+                    shell_required=bool(difference.shell and difference.shell.required),
+                    declared_required=bool(difference.declared and difference.declared.required),
+                    shell_duration_s=difference.shell.duration_s if difference.shell else 0.0,
+                    declared_duration_s=difference.declared.duration_s
+                    if difference.declared
+                    else 0.0,
+                    note=difference.note,
+                    explanation=explanation,
+                    observed_at=at,
+                )
+                session.merge(row)
+
+        await self._run(_record)
+        return replace(comparison, observed_at=at)
+
+    async def explain_spine(self, repo: str, gate: str, explanation: str) -> int:
+        """Account for a gate's disagreement, across every commit it was seen on.
+
+        Per gate rather than per commit deliberately: "coverage differs because the declaration
+        measures the package and the spine measured the services too" is a fact about coverage,
+        and making somebody retype it on each commit is how a criterion becomes a formality.
+        """
+
+        def _explain(session: Session) -> int:
+            rows = list(
+                session.scalars(
+                    select(SpineComparisonRow).where(
+                        SpineComparisonRow.repo == repo, SpineComparisonRow.gate == gate
+                    )
+                ).all()
+            )
+            for row in rows:
+                row.explanation = explanation
+            return len(rows)
+
+        return await self._run(_explain)
+
+    async def spine_comparisons(
+        self, *, repo: str | None = None, since: datetime | None = None
+    ) -> list[SpineComparison]:
+        """Every recorded comparison, grouped back into commits."""
+
+        def _load(session: Session) -> list[SpineComparison]:
+            query = select(SpineComparisonRow).order_by(SpineComparisonRow.observed_at.asc())
+            if repo:
+                query = query.where(SpineComparisonRow.repo == repo)
+            if since:
+                query = query.where(SpineComparisonRow.observed_at >= since)
+            grouped: dict[tuple[str, str], list[SpineComparisonRow]] = {}
+            for row in session.scalars(query).all():
+                grouped.setdefault((row.repo, row.commit_sha), []).append(row)
+            return [
+                SpineComparison(
+                    repo=repo_name,
+                    commit_sha=sha,
+                    observed_at=rows[0].observed_at,
+                    differences=[_difference(row) for row in rows],
+                )
+                for (repo_name, sha), rows in grouped.items()
+            ]
+
+        return await self._run(_load)
+
     # ── ApprovalStore ────────────────────────────────────────────────────────────
 
     async def request(self, request: ApprovalRequest) -> None:
@@ -677,3 +789,29 @@ def open_store(url: str, *, clock: Clock | None = None, create: bool = False) ->
     if create:
         store.create_all()
     return store
+
+
+def _difference(row: SpineComparisonRow) -> GateDifference:
+    """A row, back into the shape the comparator produced."""
+    return GateDifference(
+        gate=row.gate,
+        kind=Difference(row.kind),
+        shell=GateOutcome(
+            name=row.gate,
+            status=GateStatus(row.shell_status) if row.shell_status else None,
+            required=row.shell_required,
+            duration_s=row.shell_duration_s,
+        )
+        if row.shell_status
+        else None,
+        declared=GateOutcome(
+            name=row.gate,
+            status=GateStatus(row.declared_status) if row.declared_status else None,
+            required=row.declared_required,
+            duration_s=row.declared_duration_s,
+        )
+        if row.declared_status
+        else None,
+        note=row.note,
+        explanation=row.explanation,
+    )

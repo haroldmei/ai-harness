@@ -193,6 +193,79 @@ def gates_adopt(
         raise typer.Exit(EXIT_NO_GATES)
 
 
+@gates_app.command("compare")
+def gates_compare(
+    path: Annotated[Path, typer.Argument(help="Repository root")] = Path(),
+    declared: Annotated[Path | None, typer.Option(help="The declaration to test")] = None,
+    commit: Annotated[str, typer.Option(help="Commit the comparison belongs to")] = "",
+    repo: Annotated[str, typer.Option(help="owner/name, for the record")] = "",
+    explain: Annotated[str | None, typer.Option(help="gate=why, to account for one")] = None,
+    report: Annotated[bool, typer.Option("--report", help="Read the record, run nothing")] = False,
+) -> None:
+    """Run both spines on this commit and diff them, or report what is still unexplained.
+
+    Exits non-zero while any disagreement is unexplained, so a nightly job is the thing that
+    notices rather than a person remembering to look (#43's rule, one layer down).
+    """
+    import yaml as _yaml
+
+    from ai_harness.cli.commands.state import _store
+    from ai_harness.quality.compare import compare_spines
+    from ai_harness.quality.compare import render as render_comparison
+    from ai_harness.schemas.gates import GateProfile
+
+    store = _store(path)
+
+    if explain is not None:
+        gate, _, why = explain.partition("=")
+        if not why:
+            typer.secho("--explain takes gate=why", fg="red", err=True)
+            raise typer.Exit(EXIT_CONFIG)
+        touched = asyncio.run(store.explain_spine(repo, gate.strip(), why.strip()))
+        typer.echo(f"explained {gate.strip()} across {touched} comparison(s)")
+        raise typer.Exit(EXIT_OK)
+
+    if report:
+        recorded = asyncio.run(store.spine_comparisons(repo=repo or None))
+        unexplained = [d for c in recorded for d in c.unexplained]
+        for comparison in recorded:
+            typer.echo(render_comparison(comparison))
+        typer.echo(f"{len(recorded)} commit(s) compared, {len(unexplained)} unexplained")
+        raise typer.Exit(EXIT_RED if unexplained else EXIT_OK)
+
+    spine = path / "scripts/quality-gates.sh"
+    if not spine.exists():
+        typer.secho(f"no shell spine at {spine}", fg="red", err=True)
+        raise typer.Exit(EXIT_NO_GATES)
+    declaration = declared or (path / ".harness/gates.yaml")
+    if not declaration.exists():
+        typer.secho(
+            f"no declaration at {declaration} — `agent gates adopt` first", fg="red", err=True
+        )
+        raise typer.Exit(EXIT_NO_GATES)
+
+    found = discover(path)
+    shell_profile = found.profile.model_copy(
+        update={"entry_point": ["bash", "scripts/quality-gates.sh"]}
+    )
+    declared_profile = GateProfile(**_yaml.safe_load(declaration.read_text()))
+
+    shell_report = asyncio.run(ShellGateAdapter(root=path, profile=shell_profile).run())
+    declared_report = asyncio.run(GateRunner(root=path, profile=declared_profile).run())
+    if shell_report.is_err or declared_report.is_err:
+        failed = shell_report if shell_report.is_err else declared_report
+        assert failed.error is not None
+        typer.secho(f"could not run both spines: {failed.error.message}", fg="red", err=True)
+        raise typer.Exit(EXIT_ENVIRONMENT)
+
+    comparison = compare_spines(
+        shell_report.unwrap(), declared_report.unwrap(), repo=repo, commit_sha=commit
+    )
+    asyncio.run(store.record_spine(comparison))
+    typer.echo(render_comparison(comparison))
+    raise typer.Exit(EXIT_RED if comparison.unexplained else EXIT_OK)
+
+
 @config_app.command("show")
 def config_show(
     path: Annotated[Path, typer.Argument(help="Repository root")] = Path(),

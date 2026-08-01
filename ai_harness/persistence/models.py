@@ -263,6 +263,41 @@ class CostRow(Base):
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class SpineComparisonRow(Base):
+    """One gate, compared between a shell spine and the declaration proposed to replace it (#98).
+
+    Durable for the same reason the shadow comparisons are: the criterion spans more commits than
+    one process sees, and evidence that resets on a restart makes the criterion unsatisfiable
+    rather than merely unstarted.
+
+    The grain is one *gate* rather than one commit, because that is the grain at which a
+    disagreement is explained — "coverage differs because the declaration measures the package
+    and the spine measured the services too" is an explanation about coverage, and it should not
+    have to be repeated on every commit's row.
+    """
+
+    __tablename__ = "spine_comparisons"
+    __table_args__ = (
+        UniqueConstraint("repo", "commit_sha", "gate", name="uq_spine_comparison_gate"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repo: Mapped[str] = mapped_column(String(255), index=True)
+    commit_sha: Mapped[str] = mapped_column(String(64), index=True)
+    gate: Mapped[str] = mapped_column(String(128), index=True)
+
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    shell_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    declared_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    shell_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    declared_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    shell_duration_s: Mapped[float] = mapped_column(Float, default=0.0)
+    declared_duration_s: Mapped[float] = mapped_column(Float, default=0.0)
+    note: Mapped[str] = mapped_column(Text, default="")
+    explanation: Mapped[str] = mapped_column(Text, default="")
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class ArtefactRow(Base):
     """A pointer to preserved evidence — gate logs, diffs, invalid model output.
 
