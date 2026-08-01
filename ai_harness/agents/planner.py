@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ai_harness.agents.base import PROMPTS, Agent, AgentCall
+from ai_harness.agents.templates import template_for
 from ai_harness.context.retrieval.protocol import RetrievalBundle
 from ai_harness.context.trust import Provenance, Trusted, TrustedPrompt, Untrusted
 from ai_harness.kernel.ids import digest
@@ -53,9 +54,9 @@ class PlanBrief:
         return digest(material)[:16]
 
 
-def build_prompt(brief: PlanBrief) -> TrustedPrompt:
+def build_prompt(brief: PlanBrief, *, template_id: str = TEMPLATE_ID) -> TrustedPrompt:
     prompt = TrustedPrompt()
-    prompt.add_trusted(Trusted((PROMPTS / f"{TEMPLATE_ID}.md").read_text()))
+    prompt.add_trusted(Trusted((PROMPTS / f"{template_id}.md").read_text()))
     facts = [f"repository: {brief.repo}", f"base_sha: {brief.base_sha}"]
     if brief.protected_paths:
         facts.append("paths that park for approval if touched: " + ", ".join(brief.protected_paths))
@@ -100,6 +101,12 @@ class Planner:
     model: str
     template_id: str = TEMPLATE_ID
 
+    def __post_init__(self) -> None:
+        # Resolved once, here, rather than at the call site: an `if` where the prompt is
+        # rendered is an `if` that eventually disagrees with the one beside it (L12).
+        if self.template_id == TEMPLATE_ID:
+            self.template_id = template_for(TEMPLATE_ID, self.model)
+
     def agent(self) -> Agent[WorkPlan]:
         return Agent(
             name="planner",
@@ -113,5 +120,8 @@ class Planner:
         self, brief: PlanBrief, *, run: object = None, attempt: int = 1
     ) -> Outcome[AgentCall]:
         return await self.agent().call(
-            build_prompt(brief), run=run, state="ANALYSE", attempt=attempt
+            build_prompt(brief, template_id=self.template_id),
+            run=run,
+            state="ANALYSE",
+            attempt=attempt,
         )

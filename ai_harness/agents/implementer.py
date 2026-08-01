@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from ai_harness.agents.base import PROMPTS, Agent, AgentCall
 from ai_harness.agents.edits import AnchoredEdit, EditError, apply_anchor
+from ai_harness.agents.templates import template_for
 from ai_harness.context.trust import Provenance, Trusted, TrustedPrompt, Untrusted
 from ai_harness.kernel.outcome import ErrorCategory, Outcome
 from ai_harness.llm.client import LLMClient
@@ -82,9 +83,11 @@ class ImplementerBrief:
     """Path → content for the files the plan names. Untrusted, like all repository content."""
 
 
-def build_prompt(brief: ImplementerBrief, *, repo: str) -> TrustedPrompt:
+def build_prompt(
+    brief: ImplementerBrief, *, repo: str, template_id: str = TEMPLATE_ID
+) -> TrustedPrompt:
     prompt = TrustedPrompt()
-    prompt.add_trusted(Trusted((PROMPTS / f"{TEMPLATE_ID}.md").read_text()))
+    prompt.add_trusted(Trusted((PROMPTS / f"{template_id}.md").read_text()))
     prompt.add_trusted(Trusted(BRIEF_HEADERS[brief.brief]))
     if brief.plan is not None:
         lines = [f"summary: {brief.plan.summary}", f"approach: {brief.plan.approach}"]
@@ -125,6 +128,12 @@ class Implementer:
     repo: str = ""
     template_id: str = TEMPLATE_ID
 
+    def __post_init__(self) -> None:
+        # Resolved once, here, rather than at the call site: an `if` where the prompt is
+        # rendered is an `if` that eventually disagrees with the one beside it (L12).
+        if self.template_id == TEMPLATE_ID:
+            self.template_id = template_for(TEMPLATE_ID, self.model)
+
     def agent(self) -> Agent[ImplementationOutput]:
         return Agent(
             name="implementer",
@@ -139,7 +148,7 @@ class Implementer:
         self, brief: ImplementerBrief, *, run: object = None, attempt: int = 1
     ) -> Outcome[AgentCall]:
         outcome = await self.agent().call(
-            build_prompt(brief, repo=self.repo),
+            build_prompt(brief, repo=self.repo, template_id=self.template_id),
             run=run,
             state="IMPLEMENT",
             attempt=attempt,

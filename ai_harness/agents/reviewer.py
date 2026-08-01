@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ai_harness.agents.base import Agent, AgentCall
+from ai_harness.agents.templates import template_for
 from ai_harness.context.diff_bundler import DiffBundle
 from ai_harness.context.trust import (
     Provenance,
@@ -45,7 +46,14 @@ class ReviewBrief:
     prior_findings: list[str] | None = None
 
 
-def build_prompt(brief: ReviewBrief, *, repo: str, base_sha: str, head_sha: str) -> TrustedPrompt:
+def build_prompt(
+    brief: ReviewBrief,
+    *,
+    repo: str,
+    base_sha: str,
+    head_sha: str,
+    template_id: str = TEMPLATE_ID,
+) -> TrustedPrompt:
     """Assemble the review prompt, stable prefix first.
 
     The ordering matters twice: it is the trust boundary (instructions before data, always), and
@@ -55,7 +63,7 @@ def build_prompt(brief: ReviewBrief, *, repo: str, base_sha: str, head_sha: str)
     from ai_harness.agents.base import PROMPTS
 
     prompt = TrustedPrompt()
-    prompt.add_trusted(Trusted((PROMPTS / f"{TEMPLATE_ID}.md").read_text()))
+    prompt.add_trusted(Trusted((PROMPTS / f"{template_id}.md").read_text()))
     prompt.add_trusted(
         Trusted(
             "Facts that remain true for this review:\n"
@@ -97,6 +105,12 @@ class Reviewer:
     model: str
     template_id: str = TEMPLATE_ID
 
+    def __post_init__(self) -> None:
+        # Resolved once, here, rather than at the call site: an `if` where the prompt is
+        # rendered is an `if` that eventually disagrees with the one beside it (L12).
+        if self.template_id == TEMPLATE_ID:
+            self.template_id = template_for(TEMPLATE_ID, self.model)
+
     def agent(self) -> Agent[ReviewResult]:
         return Agent(
             name="reviewer",
@@ -115,7 +129,13 @@ class Reviewer:
         head_sha: str,
         run: object = None,
     ) -> Outcome[AgentCall]:
-        prompt = build_prompt(brief, repo=repo, base_sha=base_sha, head_sha=head_sha)
+        prompt = build_prompt(
+            brief,
+            repo=repo,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            template_id=self.template_id,
+        )
         return await self.agent().call(
             prompt, run=run, state="REVIEW", round_=brief.round, attempt=brief.round
         )

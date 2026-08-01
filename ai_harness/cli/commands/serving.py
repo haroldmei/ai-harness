@@ -209,6 +209,89 @@ def serving_probe(
         raise typer.Exit(EXIT_UNHEALTHY)
 
 
+@serving_app.command("conformance")
+def serving_conformance(
+    model: Annotated[str, typer.Argument(help="Served model name")],
+    path: Annotated[Path, typer.Option("--path", help="Repository root")] = Path(),
+    file: Annotated[Path | None, typer.Option("--file", help="Registry path")] = None,
+    out: Annotated[Path | None, typer.Option("--out", help="Append the table here")] = None,
+    repeats: Annotated[int, typer.Option(help="How many times to run each case")] = 3,
+) -> None:
+    """Ask this model for structured output repeatedly, and score what comes back (#90)."""
+    from ai_harness.agents.templates import template_for
+    from ai_harness.llm.conformance import ConformanceCase, render, run_conformance
+    from ai_harness.llm.engines.vllm import VLLMEngine
+    from ai_harness.llm.serving.probe import ProbeCache
+    from ai_harness.schemas.plan import WorkPlan
+    from ai_harness.schemas.review import ReviewResult
+    from ai_harness.wiring import probe_cache_path
+
+    registry = _registry(path, file)
+    try:
+        plan = registry.plan(model)
+    except RegistryError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_CONFIG) from exc
+
+    engine = VLLMEngine(base_url=plan.base_url, max_model_len=plan.max_model_len)
+    from ai_harness.config import load_config
+
+    cached = ProbeCache(probe_cache_path(load_config(root=path))).load(
+        base_url=plan.base_url, model=model, revision=plan.spec.revision
+    )
+    if cached is not None:
+        # Guided decoding changes the answer entirely, so the row records which it was.
+        engine.capabilities = cached.capabilities()
+
+    roles = plan.spec.roles or ("reviewer",)
+    cases: list[ConformanceCase] = []
+    for _ in range(max(repeats, 1)):
+        if "reviewer" in roles:
+            cases.append(
+                ConformanceCase(
+                    name="review",
+                    template_id=template_for("reviewer-v1", model),
+                    prompt=_REVIEW_PROMPT,
+                    model_type=ReviewResult,
+                )
+            )
+        else:
+            cases.append(
+                ConformanceCase(
+                    name="plan",
+                    template_id=template_for("planner-v1", model),
+                    prompt=_PLAN_PROMPT,
+                    model_type=WorkPlan,
+                )
+            )
+
+    report = asyncio.run(run_conformance(engine, cases, model=model))
+    table = render([report], title=f"Conformance — {model}")
+    typer.echo(table)
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        existing = out.read_text() if out.exists() else "# Conformance baselines\n"
+        out.write_text(existing.rstrip("\n") + "\n\n" + table)
+        typer.echo(f"appended to {out}")
+
+
+_REVIEW_PROMPT = """\
+Review this change against the acceptance criterion "a retried charge must write one row".
+
+diff --git a/billing/charge.py b/billing/charge.py
+@@ -10,7 +10,8 @@ def charge(account, amount):
+-    key = uuid4().hex
+     for attempt in range(3):
++        key = uuid4().hex
+         write_charge(account, amount, idempotency_key=key)
+"""
+
+_PLAN_PROMPT = """\
+Issue: retried charges are billed twice. billing/charge.py generates its idempotency key inside
+the retry loop, so the second attempt writes a second row. Plan the fix.
+"""
+
+
 @serving_app.command("bench")
 def serving_bench(
     model: Annotated[str, typer.Argument(help="Served model name")],
