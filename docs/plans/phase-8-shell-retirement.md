@@ -1,6 +1,7 @@
 # Phase 8 — Retiring the shell completely
 
-Status: **proposed** · Date: 2026-08-01 · Architecture:
+Status: **accepted** · Date: 2026-08-01 · Tracked by
+[#105](https://github.com/haroldmei/ai-harness/issues/105) · Architecture:
 [`ai-harness-python-architecture.md`](../../ai-harness-python-architecture.md) · Decisions:
 [0001](../decisions/0001-adopted-defaults.md), [0002](../decisions/0002-self-hosted-inference.md)
 
@@ -216,12 +217,16 @@ Two consequences worth stating, because they are now commitments rather than opt
 
 Phase 8 epic, plus:
 
-1. `gates: this repository declares its own gates (rung 1)` — S1
-2. `gates: agent gates adopt — a shell spine, proposed as a declaration` — S2
-3. `gates: GateSpineComparator — the shadow pattern, applied to gates` — S2
-4. `Relocate the product's gate and tool spine to the product's repository` — S2, blocked on D1
-5. `Drive one repository on the Python engine for a full release cycle` — S3, blocked on #91/#94
-6. `Delete the orchestrator stages, the shell test suite and the verdict scraper` — S4
-7. `contracts: no package file may reference a .sh path outside the ladder` — S4
-8. `Re-base the rollback: the shell-final tag, the drill, and MR_ONLY` — S5
-9. `agent retire check, and the deletion` — S6
+Filed under [#105](https://github.com/haroldmei/ai-harness/issues/105):
+
+| Step | Issue |
+|---|---|
+| S1 | #96 — gates: this repository declares its own gates (rung 1) |
+| S2 | #97 — gates: `agent gates adopt` — a shell spine, proposed as a declaration |
+| S2 | #98 — gates: `GateSpineComparator` — the shadow pattern, applied to gates |
+| S2 | #99 — Relocate the product's gate and tool spine to its own repository |
+| S3 | #100 — Drive one repository on the Python engine for a full release cycle |
+| S4 | #101 — Delete the orchestrator stages, the shell test suite and the verdict scraper |
+| S4 | #102 — contracts: no package file may reference a `.sh` path outside the ladder |
+| S5 | #103 — Re-base the rollback: the `shell-final` tag, the drill, and `MR_ONLY` |
+| S6 | #104 — `agent retire check`, and the deletion |
