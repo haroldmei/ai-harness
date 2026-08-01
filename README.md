@@ -1,29 +1,70 @@
-AI harness for app building - Streamline the software factory production line
+# ai-harness
 
-You are a senior software engineer with 10 years experience in FSM based software design and 5 years multi agentic system design experience. do a comprehensive code analysis for the shell scripts in @scripts/ folder, this is a ai app builder harness built around claude code command line. suggest a design for a robust, python based ai agent that can be scheduled or dispatched to a worker to work on a github/gitlab repository
+An FSM-routed, multi-agent software-engineering worker: it takes an issue, builds it in an
+isolated worktree, reviews it with a second model, fixes it, runs the repository's own quality
+gates, and proposes the result — unattended, resumable, and bounded in dollars.
 
-- Hook and work on a separate reporitory in a clean worktree initialized by an issue, create a branch, review the work, fix the work, then merge back to main
-- Can be used in local CLI, and dispatch to a runner
+* **The design**: [`ai-harness-python-architecture.md`](ai-harness-python-architecture.md) —
+  an analysis of the 90-script Bash harness in [`scripts/`](scripts/) and the Python
+  replacement proposed from it.
+* **The plan**: [GitHub issues](https://github.com/haroldmei/ai-harness/issues), grouped into
+  seven milestones (P0–P6) that mirror §24 of the design. Each milestone has a tracking epic.
+* **The decisions**: [`docs/decisions/0001-adopted-defaults.md`](docs/decisions/0001-adopted-defaults.md)
+  — the fourteen open questions of §27, answered.
 
-- Modular Orchestration: use FSM routed multi agentic design, follow the industry best practices
-* Strictly control the number of states to be 7 or less.
-* Limit Architectural Depth: Adhere to the two-level rule (a primary router/supervisor orchestrating distinct specialist subagents) rather than deep, multi-tiered state trees.
-* Encapsulate via Subgraphs: Use nested state containers (like subgraphs in LangGraph) to hide complexity; treat individual domains as modular black boxes with clear input/output contracts.
-* Use Deterministic Routers: Avoid expensive or unpredictable LLM calls for standard routing logic; rely on fast, deterministic intent classifiers, keyword matchers, or typed schemas for state transitions
-* Enforce Strict Message Boundaries: Design child agents purely as workers that return data to the parent orchestrator, preventing subagents from haphazardly messaging users or overlapping in responsibility
-* Implement Checkpointing and Fallbacks: Persist immutable state snapshots to external storage (like Redis or PostgreSQL) at key transition milestones to allow safe rollbacks and human-in-the-loop interruption gates
+## Status — Phase 0 (foundation) is implemented
 
-- Reusability: the design should abstract common modules to be reused, do not duplicate any part of the system.
+Phase 0 changes no behaviour anywhere: it ships the kernel, the typed contracts, the
+structured-output layer, gate discovery, and a read-only CLI that runs the repository's *own*
+gates. Nothing writes to a forge, a branch or a database. The rollback is "delete the package".
 
-- Minimal states: keep the design to have less than 
+```bash
+uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev]"
 
-- Deterministic Reliability: enforce strict schemas using Pydantic for all LLM outputs. If the response doesn't parse, we retry with a clarified prompt. For tool calls, we wrap everything in retry logic with exponential backoff, and we have graceful fallbacks when things fail. The system should never crash — it should degrade gracefully and communicate clearly
+.venv/bin/agent gates discover .        # which rung of the ladder matched, and why
+.venv/bin/agent gates run . --only unit # run the repo's own gates, interpret the result
+.venv/bin/agent config show .           # the effective configuration, resolved
+.venv/bin/agent config shell-env .      # the same bounds, for the existing shell stages
+```
 
-- Context optimization: use a tiered approach. Recent messages stay in full, older conversation gets progressively summarized. For knowledge bases, I use RAG — embed documents into a vector DB like Pinecone, then retrieve only the top-k most relevant chunks for each query. This keeps context focused and costs down
+`agent config shell-env` is the Phase 0 beachhead: the shell stages and the Python engine read
+one schema, so a mixed rollout cannot disagree about `PR_MAX_ROUNDS` or `QG_GATE_TIMEOUT`.
 
-- Operational Guardrails: Production agents need strict guardrails. implement circuit breakers that cap iterations, tokens, and wall-clock time. Any destructive action — deletes, purchases, external sends — requires explicit human approval. We also track costs per session and per user to prevent runaway spending. The agent should be safe to leave running without supervision.
+### What is in the package today
 
-- Quality gate, existing + new
-- Dev deployment, seed data
+| Module | What it carries |
+|---|---|
+| `kernel/` | `Outcome[T]` + the twelve-member error taxonomy; retry policy as data; `flock` leases; budgets with pre-dispatch reservation; fingerprints; redaction; injectable clock |
+| `schemas/` | Every typed contract, with the cross-field invariants **in** the model: approve-with-blockers is downgraded, a skipped required gate is a failure |
+| `llm/` | The extraction ladder (each rung must *parse*), the bounded repair loop, `claude` CLI + Anthropic API + scripted engines, pricing with `effective_from` |
+| `quality/` | The five-rung discovery ladder, the shell-spine adapter, the diagnostic-line extractor, inherited-red baselines, tier/requiredness semantics |
+| `config.py` | 391 shell environment knobs replaced by one validated schema, plus `RepoProfile` and `Policy` |
+| `observability/` | Structured JSON logs with redaction on the write path, and the conditional span-retention policy |
 
-Output the design to a markdown, use mermaid diagram if possible.
+### Invariants under test
+
+Every guarantee below has a named test, and each one is traceable to an incident in the shell
+harness's own history (Appendix B of the design):
+
+* a model call that never ran consumes no budget;
+* "no output" is `UNKNOWN`, not a model failure;
+* each extraction rung must parse — a lone `{` is not an answer;
+* a schema-valid but self-contradicting verdict is corrected in code;
+* a skipped required check is a failure; an unknown tier aborts;
+* a branch is judged by the failures it *adds*;
+* "the tooling could not run" is a third outcome, distinct from "the code is broken";
+* the diagnostic line, never `tail -n1`;
+* telemetry never fails the caller;
+* the router cannot reach an LLM — enforced by an import contract, not by convention.
+
+## Development
+
+```bash
+.venv/bin/ruff check ai_harness tests
+.venv/bin/mypy                 # strict
+.venv/bin/lint-imports         # the layering and the two forbidden edges
+.venv/bin/pytest               # hermetic: zero network, zero LLM cost
+```
+
+The default test suite blocks outbound sockets and scrubs every ambient `AGENT_*`/`QG_*`
+variable, so a suite cannot pass because of something inherited from the host.

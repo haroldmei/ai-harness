@@ -1,0 +1,43 @@
+# Permissive: closest to how the shell harness runs today — full autonomy including
+# fast-forward merges to the default branch.
+#
+# Two things are still not permitted, and they are not oversights:
+#   * deploy_prod stays DENIED (§2 — production deployment is out of scope by default);
+#   * bypass_gate stays DENIED (a failed required gate is never bypassed automatically, §9.4).
+#
+# Opting into ff_only additionally requires a DISCOVERED (not inferred) gate set and a green
+# base — enforced where the strategy is applied, not here (issue #59).
+name: permissive
+
+merge_strategy: ff_only
+require_isolation: bubblewrap
+allow_degraded_isolation: false
+allow_deps_install_with_lockfile: true
+
+capabilities:
+  read_repo: allow
+  write_workspace: allow
+  run_tests: allow
+  install_deps: allow
+  network: allow
+  git_push: allow
+  git_force_push: require_approval
+  forge_comment: allow
+  forge_merge: allow
+  modify_ci: require_approval
+  modify_migrations: require_approval
+  deploy_dev: allow
+  deploy_prod: deny
+  bypass_gate: deny
+
+budget:
+  max_usd_per_run: "50"
+  max_usd_per_repo_day: "1000"
+  max_wall_clock_s: 43200
+
+approval:
+  max_files_changed: 120
+  max_lines_changed: 5000
+  approve_on_risk: true
+  timeout_to_deferred_h: 24
+  timeout_to_escalated_h: 72

@@ -1,0 +1,7 @@
+Running 84 tests using 4 workers
+
+  1) e2e/checkout.spec.ts:31:5 › guest checkout completes ==============================
+
+    Error: expect(received).toHaveText(expected)
+
+  84 passed (2.1m)

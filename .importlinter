@@ -1,0 +1,71 @@
+; Import-direction contracts — §22.1 of ai-harness-python-architecture.md.
+;
+; Two forbidden edges are the whole point of this file:
+;   1. no sideways imports between peer subgraphs — anything both need lives one layer down.
+;      This is the rule that would have prevented the seven duplications of §3.14 before they
+;      drifted.
+;   2. orchestration.router must not import llm — the MECHANICAL guarantee that no LLM call
+;      decides a workflow transition (§7 principle 1).
+
+[importlinter]
+root_package = ai_harness
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Strictly downward layering
+type = layers
+layers =
+    ai_harness.cli | ai_harness.workers
+    ai_harness.orchestration
+    ai_harness.subgraphs
+    ai_harness.agents | ai_harness.quality | ai_harness.workspace | ai_harness.deploy
+    ai_harness.llm | ai_harness.context | ai_harness.tools | ai_harness.policies | ai_harness.security
+    ai_harness.providers | ai_harness.persistence | ai_harness.observability
+    ai_harness.schemas
+    ai_harness.kernel
+
+[importlinter:contract:router-is-llm-free]
+name = The router cannot reach an LLM
+type = forbidden
+source_modules =
+    ai_harness.orchestration.router
+    ai_harness.orchestration.transitions
+forbidden_modules =
+    ai_harness.llm
+    ai_harness.agents
+    ai_harness.providers
+
+[importlinter:contract:subgraph-peers]
+name = Peer subgraphs are independent
+type = independence
+modules =
+    ai_harness.subgraphs.prepare
+    ai_harness.subgraphs.analyse
+    ai_harness.subgraphs.implement
+    ai_harness.subgraphs.validate
+    ai_harness.subgraphs.review
+    ai_harness.subgraphs.integrate
+    ai_harness.subgraphs.complete
+
+[importlinter:contract:kernel-is-standalone]
+name = The kernel imports nothing from the package
+type = forbidden
+source_modules =
+    ai_harness.kernel
+forbidden_modules =
+    ai_harness.schemas
+    ai_harness.providers
+    ai_harness.llm
+    ai_harness.orchestration
+
+[importlinter:contract:structured-output-has-one-caller]
+name = call_structured has exactly one caller
+type = forbidden
+source_modules =
+    ai_harness.subgraphs
+    ai_harness.orchestration
+    ai_harness.quality
+    ai_harness.workspace
+    ai_harness.cli
+forbidden_modules =
+    ai_harness.llm.structured

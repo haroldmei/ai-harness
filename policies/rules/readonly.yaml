@@ -1,0 +1,31 @@
+# Read-only: the harness may look and report, and may change nothing anywhere.
+#
+# This is the policy `agent gates run` and every shadow-mode comparison run under, and the
+# suite asserts that nothing mutating is permitted by it.
+name: readonly
+
+merge_strategy: mr_only
+require_isolation: bubblewrap
+allow_degraded_isolation: false
+allow_deps_install_with_lockfile: false
+
+capabilities:
+  read_repo: allow
+  run_tests: allow
+  write_workspace: deny
+  install_deps: deny
+  network: deny
+  git_push: deny
+  git_force_push: deny
+  forge_comment: deny
+  forge_merge: deny
+  modify_ci: deny
+  modify_migrations: deny
+  deploy_dev: deny
+  deploy_prod: deny
+  bypass_gate: deny
+
+budget:
+  max_usd_per_run: "5"
+  max_usd_per_repo_day: "50"
+  max_wall_clock_s: 3600

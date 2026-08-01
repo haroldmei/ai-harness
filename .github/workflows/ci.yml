@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv -e ".[dev]"
+
+      - name: lint
+        run: .venv/bin/ruff check ai_harness tests
+
+      - name: format
+        run: .venv/bin/ruff format --check ai_harness tests
+
+      - name: types
+        run: .venv/bin/mypy
+
+      # The two forbidden edges of §22.1: no sideways subgraph imports, and the router
+      # cannot reach an LLM. A violation is a build failure, never a review comment.
+      - name: import contracts
+        run: .venv/bin/lint-imports
+
+      - name: tests
+        # Zero network, zero LLM cost — the default suite is hermetic by construction.
+        run: .venv/bin/pytest

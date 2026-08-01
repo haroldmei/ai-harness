@@ -7,3 +7,14 @@
 # Editor / OS noise
 .DS_Store
 *.swp
+
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+build/
+dist/

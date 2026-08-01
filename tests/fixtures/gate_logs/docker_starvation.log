@@ -1,0 +1,4 @@
+[integration] booting ephemeral stack on project harness-itest-3
+Error response from daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock
+container never became usable after 120s
+[integration] teardown complete

@@ -1,0 +1,20 @@
+============================= test session starts ==============================
+collected 3489 items
+
+backend/tests/test_auth.py ..........                                    [ 12%]
+{"event": "Sentry initialisation failed; continuing without it", "level": "warning", "timestamp": "2026-08-01T10:11:12Z", "exception": "Traceback (most recent call last):\n  File \"/srv/app/sentry.py\", line 3\nAttributeError: module has no attribute 'init'"}
+backend/tests/test_billing.py .F...                                      [ 44%]
+
+=================================== FAILURES ===================================
+_______________________ test_invoice_totals_include_tax ________________________
+
+    def test_invoice_totals_include_tax():
+        invoice = build_invoice(items=[Item(price=100)], tax_rate=0.2)
+>       assert invoice.total == 120
+E       AssertionError: assert 100 == 120
+
+backend/tests/test_billing.py:88: AssertionError
+=========================== short test summary info ============================
+FAILED backend/tests/test_billing.py::test_invoice_totals_include_tax - Asser...
+1 failed, 3488 passed, 12 warnings in 214.51s
+ ✓ release-train guards

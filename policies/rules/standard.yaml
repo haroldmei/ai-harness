@@ -1,0 +1,51 @@
+# The shipped default policy.
+#
+# Encodes the decisions adopted in issue #1: MR_ONLY (Q1), $25/run and $500/repo/day (Q6),
+# dependency installation approval-gated unless a lockfile is present (Q8), CI configuration
+# never written autonomously (Q9), 72h worktree retention (Q10), approvals timing out to
+# deferred at 24h and escalated at 72h (Q14).
+#
+# Production deployment is DENIED rather than approval-gated: it is out of scope by default
+# (§2), and a capability you can approve your way into is a capability you have.
+name: standard
+
+merge_strategy: mr_only
+require_isolation: bubblewrap
+allow_degraded_isolation: false
+require_approval_to_start: false
+allow_deps_install_with_lockfile: true
+
+capabilities:
+  read_repo: allow
+  write_workspace: allow
+  run_tests: allow
+  install_deps: require_approval
+  network: require_approval
+  git_push: allow
+  git_force_push: require_approval
+  forge_comment: allow
+  forge_merge: require_approval
+  modify_ci: require_approval
+  modify_migrations: require_approval
+  deploy_dev: require_approval
+  deploy_prod: deny
+  bypass_gate: deny
+
+budget:
+  max_usd_per_run: "25"
+  max_usd_per_repo_day: "500"
+  max_wall_clock_s: 21600
+
+approval:
+  max_files_changed: 40
+  max_lines_changed: 1500
+  approve_on_risk: true
+  timeout_to_deferred_h: 24
+  timeout_to_escalated_h: 72
+
+failure:
+  preserve_worktree_on: [escalated]
+  preserve_worktree_ttl_h: 72
+  always_preserve_artefacts: true
+  update_forge_on_failure: true
+  notify_on: [escalated, blocked]

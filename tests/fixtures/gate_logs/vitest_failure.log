@@ -1,0 +1,8 @@
+ RUN  v1.6.0 /srv/app/frontend
+
+ ✓ src/lib/format.test.ts (12 tests) 41ms
+ × src/components/Cart.test.tsx > applies the discount code 18ms
+   → expected 90 to be 80
+
+ Test Files  1 failed | 24 passed (25)
+      Tests  1 failed | 311 passed (312)
