@@ -247,7 +247,11 @@ def test_only_the_layers_that_should_touch_durable_state_do(tmp_path: Path) -> N
         capture_output=True,
         text=True,
     ).stdout.split()
-    allowed = {"persistence", "cli", "orchestration"}
+    # Phase 3 adds policies/: the approval gateway records and polls approvals, which is
+    # durable state by definition. What must NOT appear here is agents, subgraphs,
+    # quality or context — those receive what they need through their context object,
+    # so a state cannot quietly fetch or mutate the run it is executing.
+    allowed = {"persistence", "cli", "orchestration", "policies"}
     for reader in readers:
         relative = Path(reader).relative_to(root / "ai_harness")
         assert relative.parts[0] in allowed, f"{relative} reads durable state before Phase 4"

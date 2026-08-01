@@ -12,7 +12,7 @@ gates, and proposes the result — unattended, resumable, and bounded in dollars
 * **The decisions**: [`docs/decisions/0001-adopted-defaults.md`](docs/decisions/0001-adopted-defaults.md)
   — the fourteen open questions of §27, answered.
 
-## Status — Phases 0, 1 and 2 are implemented
+## Status — Phases 0–3 are implemented
 
 **Phase 0** changes no behaviour anywhere: the kernel, the typed contracts, the
 structured-output layer, gate discovery, and a read-only CLI that runs the repository's *own*
@@ -22,6 +22,12 @@ gates. The rollback is "delete the package".
 keeps reading labels; it additionally calls `agent record` at each stage boundary, so runs,
 checkpoints, counters and cost become queryable *before any behaviour moves*. The rollback is
 "stop calling the helper".
+
+**Phase 3** adds the states that write code: `ANALYSE` (the only state where a model makes a
+routing-relevant judgement, schema-constrained) and `IMPLEMENT` (one subgraph, three briefs,
+replacing three drifted shell implementations). Plus the capability broker, the approval
+gateway, the triager, a second model provider and end-to-end budgets. Still behind the same
+per-repo flag — nothing drives production until #76 closes.
 
 **Phase 2** adds the orchestration core and the first ported state. The seven-state machine, the
 pure router, the sandbox, the context layer and the reviewer all exist and run — but in **shadow
@@ -65,7 +71,8 @@ one schema, so a mixed rollout cannot disagree about `PR_MAX_ROUNDS` or `QG_GATE
 | `security/` | Probed container/bubblewrap isolation that degrades loudly, path containment, and a sandbox environment with no credentials in it |
 | `context/` | The trust boundary as a *type*, tiered assembly with pinned facts, diff bundling with elision markers, and repo-native retrieval (no vector store) |
 | `agents/` | The `Agent` base (the only caller of `call_structured`), the roster that refuses a self-review, and the reviewer with its versioned prompt |
-| `subgraphs/` | `REVIEW`, end to end: isolated, bounded, idempotent on `(commit, round)` |
+| `subgraphs/` | `REVIEW`, `ANALYSE` and `IMPLEMENT` — isolated, bounded, idempotent |
+| `tools/` + `policies/` | Capability resolution before every action, path containment, an audit record per call, and approvals that park rather than block |
 
 ### Invariants under test
 
@@ -91,7 +98,13 @@ harness's own history (Appendix B of the design):
 * a reviewer and an implementer sharing a model cannot be configured at all;
 * an empty envelope consumes no review round, and the streak is bounded at two;
 * a verdict for an unchanged commit is reused rather than re-bought;
-* nothing raises across a state boundary — the run parks, the process lives.
+* nothing raises across a state boundary — the run parks, the process lives;
+* no tool executes without a capability, and an unregistered tool is denied, not defaulted;
+* a policy denial is never retried, and no context can soften one;
+* an approval nobody answers is a decision not to proceed (24h → deferred, 72h → escalated);
+* a red gate is classified from evidence before judgement — "the tooling could not run" is a
+  third outcome, and a red base is never blamed on an unconfirmed guess;
+* work with no signature never opens a self-filing loop.
 
 ## Development
 

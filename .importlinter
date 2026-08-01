@@ -14,12 +14,29 @@ include_external_packages = True
 [importlinter:contract:layers]
 name = Strictly downward layering
 type = layers
+;
+; Refined in Phase 3, after the contract caught three violations that were not mistakes.
+; §22.1 lists agents/quality and tools/policies/security as peers; the dependencies that
+; actually exist are directional, and pretending otherwise would mean either weakening the
+; contract or contorting the code:
+;
+;   * the triager reads gate logs and baselines, so quality sits BELOW agents. Nothing in
+;     quality needs an agent — the one candidate, the flake adjudicator, is deliberately not
+;     built (Q11: a confirmation re-run is deterministic evidence, and a model adds judgement
+;     where evidence already exists);
+;   * the tool broker's entire job is to consult policy and enforce containment before it
+;     executes anything, so policies and security sit BELOW tools.
+;
+; Both directions are one-way and stay checked. A peer declaration would have made these
+; imports legal in either direction, which is strictly less safety than this.
 layers =
     ai_harness.cli | ai_harness.workers
     ai_harness.orchestration
     ai_harness.subgraphs
-    ai_harness.agents | ai_harness.quality | ai_harness.workspace | ai_harness.deploy
-    ai_harness.llm | ai_harness.context | ai_harness.tools | ai_harness.policies | ai_harness.security
+    ai_harness.agents
+    ai_harness.quality | ai_harness.workspace | ai_harness.deploy
+    ai_harness.llm | ai_harness.context | ai_harness.tools
+    ai_harness.policies | ai_harness.security
     ai_harness.providers | ai_harness.persistence | ai_harness.observability
     ai_harness.schemas
     ai_harness.kernel
