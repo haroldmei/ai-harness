@@ -202,3 +202,127 @@ def test_the_wiring_builds_a_router_for_a_mixed_roster(tmp_path, monkeypatch):
     config.roster.reviewer_model = "not-in-the-registry"
     with pytest.raises(WiringError, match="names no engine"):
         build_engine(config)
+
+
+# ── #91's code half: two models, compared, neither of them posting ──────────────
+
+
+async def test_the_shadow_runner_can_compare_two_reviewers_instead_of_scraping_a_pr():
+    from dataclasses import dataclass as _dataclass
+    from decimal import Decimal
+
+    from ai_harness.kernel.clock import FrozenClock
+    from ai_harness.orchestration.shadow_runner import ShadowRunner
+    from ai_harness.schemas.enums import Signal, Verdict
+    from ai_harness.schemas.shadow import Agreement
+
+    @_dataclass
+    class StubReviewer:
+        verdict: str
+        blocking: int = 0
+
+        async def execute(self, ctx):
+            from ai_harness.subgraphs.base import SubgraphResult
+
+            return Outcome.ok(
+                SubgraphResult(
+                    signal=Signal.ADVANCE,
+                    payload={
+                        "review": {
+                            "verdict": self.verdict,
+                            "blocking_findings": ["a.py:1"] * self.blocking,
+                        }
+                    },
+                    usd=Decimal("0.01"),
+                )
+            )
+
+    class Forge:
+        writes_blocked = True
+
+        async def find_mr_by_head(self, head):
+            return Outcome.ok(None)
+
+        async def get_diff(self, number):
+            return Outcome.ok("diff --git a/a.py b/a.py")
+
+    class Store:
+        def __init__(self):
+            self.stored = []
+
+        async def observe(self, comparison, *, repo):
+            self.stored.append(comparison)
+            return comparison
+
+    store = Store()
+    runner = ShadowRunner(
+        reviewer=StubReviewer(verdict="approve"),
+        forge=Forge(),  # type: ignore[arg-type]
+        store=store,
+        repo="o/r",
+        clock=FrozenClock(),
+        baseline=StubReviewer(verdict="request_changes", blocking=1),
+        baseline_engine="cloud",
+    )
+
+    observation = (await runner.observe(7)).unwrap()
+    comparison = observation.comparison
+
+    # The failure mode worth catching is the local reviewer being *quieter*: approving what the
+    # cloud reviewer blocks. It has to show up as a disagreement, not as a missing observation.
+    assert comparison.shell.verdict is Verdict.REQUEST_CHANGES
+    assert comparison.python.verdict is Verdict.APPROVE
+    assert comparison.agreement is not Agreement.AGREE
+    assert store.stored
+
+
+async def test_a_reviewer_that_crashes_is_recorded_rather_than_skipped():
+    from ai_harness.kernel.clock import FrozenClock
+    from ai_harness.orchestration.shadow_runner import ShadowRunner
+
+    class Boom:
+        async def execute(self, ctx):
+            return Outcome.fail(ErrorCategory.TRANSIENT, "the local server went away")
+
+    class Ok:
+        async def execute(self, ctx):
+            from decimal import Decimal
+
+            from ai_harness.schemas.enums import Signal
+            from ai_harness.subgraphs.base import SubgraphResult
+
+            return Outcome.ok(
+                SubgraphResult(
+                    signal=Signal.ADVANCE,
+                    payload={"review": {"verdict": "approve"}},
+                    usd=Decimal("0.01"),
+                )
+            )
+
+    class Forge:
+        writes_blocked = True
+
+        async def find_mr_by_head(self, head):
+            return Outcome.ok(None)
+
+        async def get_diff(self, number):
+            return Outcome.ok("diff")
+
+    class Store:
+        async def observe(self, comparison, *, repo):
+            return comparison
+
+    runner = ShadowRunner(
+        reviewer=Boom(),
+        forge=Forge(),  # type: ignore[arg-type]
+        store=Store(),
+        repo="o/r",
+        clock=FrozenClock(),
+        baseline=Ok(),
+    )
+
+    comparison = (await runner.observe(9)).unwrap().comparison
+    # "The local reviewer crashed on 3% of PRs" is what an observation window is for; a runner
+    # that skipped those would report a flattering rate over the survivors.
+    assert comparison.python.verdict is None
+    assert "went away" in comparison.python.note

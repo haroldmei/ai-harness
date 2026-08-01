@@ -14,7 +14,24 @@ gates, and proposes the result — unattended, resumable, and bounded in dollars
 * **The runbook**: [`docs/runbooks/migration.md`](docs/runbooks/migration.md) — what must be true
   before each cutover, how to verify it, and how to get back.
 
-## Status — Phases 0–6 are implemented
+## Status — Phases 0–7 are implemented
+
+**Phase 7** brings the model in-house. `selfhost.md` picks vLLM and a 4-bit 30B on the existing
+RTX 4090; what that costs is not the serving, it is the five assumptions the harness had baked in
+about a *remote, metered, large-context, well-behaved* model. Cost stops being the rail, so
+GPU-seconds become one, reserved before dispatch like dollars are. `reviewer != implementer` has
+to survive one 24 GB card, so the GPU gets an owner and the swap gets a bill. The window shrinks
+roughly fourfold while `estimate_tokens` was still `len // 4`, so counting became honest and
+overflow became a first-class outcome that re-assembles once instead of blaming the model.
+Schema conformance stops being nearly free, so guided decoding is *probed* rather than declared.
+And whole-file edits become priced in wall-clock, so the model may express an edit as an anchor
+and the harness re-materialises the file the broker sees.
+
+Nothing cuts over on a claim: the local reviewer runs in shadow against the cloud one, the
+rollback is `roster.engine: claude-cli`, and the two empirical halves — thirty real PRs compared,
+seven days unattended — are open rather than assumed. See
+[`docs/plans/phase-7-self-hosted-inference.md`](docs/plans/phase-7-self-hosted-inference.md) and
+[`docs/runbooks/selfhost.md`](docs/runbooks/selfhost.md).
 
 **Phase 0** changes no behaviour anywhere: the kernel, the typed contracts, the
 structured-output layer, gate discovery, and a read-only CLI that runs the repository's *own*

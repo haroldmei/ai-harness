@@ -78,6 +78,15 @@ class ShadowRunner:
     clock: Clock = field(default_factory=SystemClock)
     logger: Logger = field(default_factory=Logger)
     bot_authors: tuple[str, ...] = ("github-actions", "agent", "harness")
+    baseline: Any = None
+    """A *second* reviewer to compare against, instead of scraping the pull request (#91).
+
+    Phase 2 compared the Python reviewer against the shell one, whose verdict was already posted
+    on the PR — reading it was right, because re-running it would have compared against a second
+    opinion rather than the one that governed the change. Phase 7 compares two *models*, and
+    neither of them has posted anything: the cloud reviewer is the baseline and it has to be run
+    to have an opinion at all. When this is set it is used and nothing is scraped."""
+    baseline_engine: str = "cloud"
 
     async def observe(
         self, number: int, *, run_id: str = "", round_: int = 1
@@ -102,8 +111,13 @@ class ShadowRunner:
         head_sha = found.head_sha if found is not None else ""
         identity = run_id or f"pr-{number}"
 
-        shell = await self._shell_decision(number)
-        python = await self._python_decision(number, diff.unwrap(), head_sha, round_)
+        diff_text = diff.unwrap()
+        shell = (
+            await self._baseline_decision(number, diff_text, head_sha, round_)
+            if self.baseline is not None
+            else await self._shell_decision(number)
+        )
+        python = await self._python_decision(number, diff_text, head_sha, round_)
 
         comparison = compare(
             run_id=identity, head_sha=head_sha, round_=round_, shell=shell, python=python
@@ -148,10 +162,35 @@ class ShadowRunner:
             usd=Decimal(0),
         )
 
+    async def _baseline_decision(
+        self, number: int, diff_text: str, head_sha: str, round_: int
+    ) -> Decision:
+        """Run the baseline reviewer. Same context, same round, different model."""
+        return await self._decide(
+            self.baseline, self.baseline_engine, number, diff_text, head_sha, round_
+        )
+
     async def _python_decision(
         self, number: int, diff_text: str, head_sha: str, round_: int
     ) -> Decision:
-        outcome = await self.reviewer.execute(
+        return await self._decide(self.reviewer, "python", number, diff_text, head_sha, round_)
+
+    async def _decide(
+        self,
+        reviewer: Any,
+        engine: str,
+        number: int,
+        diff_text: str,
+        head_sha: str,
+        round_: int,
+    ) -> Decision:
+        """Run one reviewer and read its decision. A failure is recorded, never dropped.
+
+        "The local reviewer crashed on 3% of PRs" is exactly what an observation window is for,
+        and a runner that skipped those would report a flattering agreement rate over the
+        survivors.
+        """
+        outcome = await reviewer.execute(
             ReviewContext(
                 run_id=f"shadow-{number}",
                 repo=self.repo,
@@ -163,16 +202,16 @@ class ShadowRunner:
             )
         )
         if outcome.is_err:
-            message = outcome.error.message if outcome.error else "the Python reviewer failed"
-            return Decision.absent("python", message)
+            message = outcome.error.message if outcome.error else f"the {engine} reviewer failed"
+            return Decision.absent(engine, message)
 
         result = outcome.unwrap()
         review = result.payload.get("review") or {}
         verdict_value = review.get("verdict")
         if verdict_value is None:
-            return Decision.absent("python", "the Python reviewer produced no verdict")
+            return Decision.absent(engine, f"the {engine} reviewer produced no verdict")
         return Decision(
-            engine="python",
+            engine=engine,
             verdict=Verdict(verdict_value),
             blocking=len(review.get("blocking_findings") or []),
             downgraded=bool(review.get("downgraded")),
