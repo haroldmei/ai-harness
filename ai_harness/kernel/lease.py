@@ -89,8 +89,15 @@ class LeaseManager:
             await self.release(handle)
 
     async def _heartbeat(self, handle: LeaseHandle, interval: float) -> None:
+        """Renew until cancelled.
+
+        The *cadence* sleeps in real time deliberately, while everything semantic — expiry,
+        acquisition, reclaim — reads the injectable clock. A heartbeat driven by a frozen clock
+        is a busy loop: ``sleep`` returns instantly, the task renews again, and it starves the
+        event loop it shares with the work it is protecting.
+        """
         while True:
-            await self._clock.sleep(interval)
+            await asyncio.sleep(interval)
             if not await self._backend.renew(handle):
                 return
 

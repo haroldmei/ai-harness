@@ -1,11 +1,15 @@
-"""``agent`` — the Phase 0 command surface.
+"""``agent`` — the command surface as far as Phase 1.
 
-Read-only by construction. Everything here discovers, runs the repository's *own* gates, or
-prints resolved configuration; nothing writes to a forge, a branch or a database. That is what
-makes Phase 0's rollback "delete the package".
+Nothing here writes to a forge or a branch. Phase 0's commands discover and run the
+repository's *own* gates and print resolved configuration; Phase 1 adds ``record``, which the
+shell stages call to write shadow state, and the read commands that make that state useful.
 
-The commands that mutate — ``run``, ``resume``, ``retry``, ``cancel``, ``approve``, ``tick`` —
-arrive with the states that back them, in Phases 1–4.
+``record`` is the only command that writes anything, it writes only to the harness's own
+database, and it cannot fail its caller. That is what keeps Phase 1's rollback at "stop calling
+the helper".
+
+The commands that drive work — ``run``, ``resume``, ``retry``, ``cancel``, ``approve``,
+``tick`` — arrive with the states that back them, in Phases 2–4.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from typing import Annotated
 
 import typer
 
+from ai_harness.cli.commands.state import record, state_app
 from ai_harness.config import ConfigError, HarnessConfig, load_config, load_policy
 from ai_harness.quality.adapters.shell import ShellGateAdapter
 from ai_harness.quality.discovery import describe, discover
@@ -35,6 +40,12 @@ gates_app = typer.Typer(help="Discover and run the repository's own quality gate
 config_app = typer.Typer(help="Show the effective configuration, profile and policy.")
 app.add_typer(gates_app, name="gates")
 app.add_typer(config_app, name="config")
+
+# Phase 1: durable state is written (by the shell, via `record`) and readable, but nothing
+# reads it to make a decision yet — that is Phase 4.
+app.command("record")(record)
+for _name in ("ls", "inspect", "cost", "replay"):
+    app.registered_commands.extend([c for c in state_app.registered_commands if c.name == _name])
 
 EXIT_OK = 0
 EXIT_RED = 1

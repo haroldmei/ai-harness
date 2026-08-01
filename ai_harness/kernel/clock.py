@@ -64,8 +64,16 @@ class FrozenClock:
         return self._mono
 
     async def sleep(self, seconds: float) -> None:
+        """Advance instead of waiting — but still **yield**.
+
+        Returning without yielding looks harmless and is not: a background task that sleeps in
+        a loop (the lease heartbeat does exactly this) never gives the event loop a chance to
+        run anything else, so the whole suite hangs at full CPU. ``asyncio.sleep(0)`` keeps the
+        test instantaneous while staying cooperative.
+        """
         self.slept.append(seconds)
         self.advance(seconds)
+        await asyncio.sleep(0)
 
     def advance(self, seconds: float) -> None:
         self._now += timedelta(seconds=seconds)
