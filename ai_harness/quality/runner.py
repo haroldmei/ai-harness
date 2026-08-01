@@ -83,7 +83,14 @@ class GateRunner:
         requested = only if only is not None else self.profile.names_for(gate_set)
         specs = {spec.name: spec for spec in self.profile.gates}
         selection = select(list(specs), only=only, skip=skip)
-        required = required_names(self.profile.tier)
+        # Requiredness is the UNION of what the profile declares and what the tier table says,
+        # restricted to gates that exist. Two sources because there are two kinds of profile: a
+        # discovered shell spine carries its requiredness in the table (transcribed from
+        # `REQUIRED_BY_TIER`), and a *declared* one carries it per spec — a rung-1 profile whose
+        # gate names are its own would otherwise have every one of them read as optional, which
+        # is invariant 11 ("skip is not pass") failing silently in the safe-looking direction.
+        # Union rather than either-or, because it can only ever make more gates required.
+        required = self.profile.required_names() | (required_names(self.profile.tier) & set(specs))
 
         cpu = asyncio.Semaphore(max(self.profile.cpu_jobs, 1))
         stack = asyncio.Semaphore(max(self.profile.stack_jobs, 1))

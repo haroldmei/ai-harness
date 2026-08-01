@@ -1,0 +1,66 @@
+# This repository's gates, declared (#96, S1 of Phase 8).
+#
+# Before this file existed, `agent gates discover .` resolved to rung 2 and reported 22 gates --
+# `iteration-immutable`, `seed-integrity`, `mobile-e2e`, `visual` -- belonging to the app-builder
+# product, whose spine happens to live in scripts/. That product has no code here and this
+# repository has no state/ directory, so most of those gates would have skipped against inputs
+# that do not exist. A gate set that reports on a tenant is not this repository's contract.
+#
+# These five are. They are the same five CI runs, by the same commands, and
+# `tests/unit/test_own_gates.py` fails if the two ever disagree -- a declaration that has drifted
+# from the pipeline it claims to mirror is worse than no declaration, because it reads as a
+# promise.
+#
+# This is rung 1: declaring gates that already exist. It is not the harness inventing a gate
+# suite for itself, which §19.1 forbids for good reason.
+#
+# The commands are `.venv/bin/...` rather than bare names, deliberately. CI runs exactly these
+# paths, and a bare `ruff` is whichever ruff is on PATH -- which is how a gate silently starts
+# checking with a different version than the one that gates the merge.
+
+tier: launch
+
+# Everything here is required from the lowest tier. This is the harness itself: there is no
+# scale at which it is acceptable to merge it with red types or a broken import contract.
+gates:
+  - name: lint
+    kind: shell
+    command: [".venv/bin/ruff", "check", "ai_harness", "tests"]
+    required_from_tier: toy
+    timeout_s: 300
+
+  - name: format
+    kind: shell
+    command: [".venv/bin/ruff", "format", "--check", "ai_harness", "tests"]
+    required_from_tier: toy
+    timeout_s: 300
+
+  - name: typecheck
+    kind: shell
+    command: [".venv/bin/mypy"]
+    required_from_tier: toy
+    timeout_s: 600
+
+  # The two forbidden edges of §22.1: no sideways subgraph imports, and the router cannot reach
+  # an LLM. A violation is a build failure, never a review comment -- so it is a gate.
+  - name: contracts
+    kind: shell
+    command: [".venv/bin/lint-imports"]
+    required_from_tier: toy
+    timeout_s: 300
+
+  - name: unit
+    kind: shell
+    command: [".venv/bin/pytest"]
+    required_from_tier: toy
+    timeout_s: 1800
+
+# The fast set is the four that answer in seconds. `unit` is not slow in absolute terms, but it
+# is the one whose feedback a human waits on, so it stays out of the loop that runs on every
+# keystroke-scale change.
+fast_set: [lint, format, typecheck, contracts]
+
+# All five are `cpu`: nothing here boots a container or binds a port, so the stack semaphore is
+# unused and declaring otherwise would serialise gates for no reason.
+cpu_jobs: 4
+stack_jobs: 1

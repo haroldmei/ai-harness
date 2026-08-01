@@ -32,6 +32,7 @@ from ai_harness.config import ConfigError, HarnessConfig, load_config, load_poli
 from ai_harness.quality.adapters.shell import ShellGateAdapter
 from ai_harness.quality.discovery import describe, discover
 from ai_harness.quality.registry import UnknownTierError, parse_tier
+from ai_harness.quality.runner import GateRunner
 from ai_harness.schemas.enums import GateSet, GateStatus, Tier
 from ai_harness.schemas.gates import GateReport
 
@@ -117,9 +118,19 @@ def gates_run(
         typer.secho("no gate entry point was discovered", fg="red", err=True)
         raise typer.Exit(EXIT_NO_GATES)
 
-    adapter = ShellGateAdapter(root=path, profile=found.profile)
+    # Two profiles, two runners, and the difference is not cosmetic. A *discovered* spine is
+    # somebody's `quality-gates.sh` or `make check`: the adapter calls it and consumes its
+    # scorecard, because §19.1 says the repository owns its gates. A *declared* profile
+    # (`.harness/gates.yaml`, rung 1) has no entry point to call, so the native runner executes
+    # the specs directly. Until now only the first path was reachable from here, which meant a
+    # repository that declared its gates could not have them run — including this one.
+    runner: ShellGateAdapter | GateRunner = (
+        ShellGateAdapter(root=path, profile=found.profile)
+        if found.profile.entry_point is not None
+        else GateRunner(root=path, profile=found.profile)
+    )
     outcome = asyncio.run(
-        adapter.run(
+        runner.run(
             gate_set=GateSet.FAST if fast else GateSet.FULL,
             only=_split(only),
             skip=_split(skip),

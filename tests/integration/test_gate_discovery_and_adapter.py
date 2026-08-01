@@ -83,11 +83,28 @@ def test_discovery_is_a_pure_function_of_the_tree(tmp_path: Path) -> None:
     assert describe(discover(tmp_path)) == describe(discover(tmp_path))
 
 
-def test_this_repository_discovers_its_own_shell_spine() -> None:
+def test_this_repository_declares_its_own_gates():
+    """#96: rung 1, and the gates are this repository's rather than a tenant's.
+
+    This assertion used to read `is DiscoveryRung.ENTRY_POINT` — the ladder found
+    `scripts/quality-gates.sh` and reported the app-builder product's 22 gates
+    (`iteration-immutable`, `mobile-e2e`, `visual`) as this repository's contract. There is no
+    `state/` directory here for those gates to read, so most of them would have skipped against
+    inputs that do not exist. That was W12's coupling wearing a directory instead of an import.
+    """
     found = discover(REPO_ROOT)
-    assert found.rung is DiscoveryRung.ENTRY_POINT
-    assert "typecheck" in [g.name for g in found.profile.gates]
-    assert "unit" in [g.name for g in found.profile.gates]
+    assert found.rung is DiscoveryRung.HARNESS_CONFIG
+    assert [g.name for g in found.profile.gates] == [
+        "lint",
+        "format",
+        "typecheck",
+        "contracts",
+        "unit",
+    ]
+    # The tenant's vocabulary must not come back.
+    assert not {"iteration-immutable", "mobile-e2e", "visual", "seed-integrity"} & {
+        g.name for g in found.profile.gates
+    }
 
 
 # ── the adapter ──────────────────────────────────────────────────────────────────
