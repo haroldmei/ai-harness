@@ -72,9 +72,13 @@ def work(
     try:
         identity = worker_id or f"worker-{harness.config.profile.name or 'local'}"
         report = asyncio.run(
-            Worker(deps=harness.deps, queue=harness.queue, worker_id=identity, batch=batch).work(
-                repo=repo or None
-            )
+            Worker(
+                deps=harness.deps,
+                queue=harness.queue,
+                worker_id=identity,
+                batch=batch,
+                host_concurrency=harness.config.host_concurrency,
+            ).work(repo=repo or None)
         )
         typer.echo(
             json.dumps(

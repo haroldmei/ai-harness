@@ -58,6 +58,11 @@ class Deps:
     context_builder: Any = None
     """``async (run, deps) -> ctx``. Absent means the subgraph receives the run itself."""
     lease_ttl_s: float = 900.0
+    gpu_time: Any = None
+    """``GpuTime`` (#89). When present, each state's wall-clock is recorded beside the seconds
+    the GPU was actually generating — which is the number `selfhost.md`'s "the LLM is not the
+    bottleneck" claim turns on, and the only way to confirm or refute it with this repository's
+    own gate suite."""
 
 
 async def run_until_boundary(run_id: str, worker_id: str, deps: Deps) -> RunStatus:
@@ -126,6 +131,8 @@ async def run_until_boundary(run_id: str, worker_id: str, deps: Deps) -> RunStat
             started_at = deps.clock.now()
             outcome = await _execute(subgraph, ctx, timeout=policy.timeout_s, state=run.state)
             duration = deps.clock.monotonic() - started
+            if deps.gpu_time is not None:
+                deps.gpu_time.record_state(run.state.value, duration)
 
             # ── 5. route — deterministically, with no model in sight ─────────────
             result = outcome.value_or_none

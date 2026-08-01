@@ -41,6 +41,7 @@ from ai_harness.kernel.clock import Clock, SystemClock
 from ai_harness.kernel.lease import FlockLeaseBackend, LeaseBackend, LeaseManager
 from ai_harness.llm.client import LLMClient
 from ai_harness.llm.engines.protocol import Engine
+from ai_harness.llm.pacing import GpuTime
 from ai_harness.observability.logging import Logger
 from ai_harness.orchestration.machine import Deps
 from ai_harness.orchestration.registry import Registry
@@ -182,6 +183,17 @@ def _engine_named(
     if model is not None and name in ("local", "vllm"):
         return build_local_engine(scoped, model=model, logger=logger)
     return build_engine(scoped, logger=logger)
+
+
+LOCAL_LEASE_TTL_S = 3600.0
+"""A local state can be a model swap plus several minutes of generation, and a lease that
+expires mid-generation is a lost run — the failure a week-long soak finds and a unit test does
+not. The hosted default stays 900s, where a state that takes fifteen minutes is already wrong."""
+
+
+def lease_ttl_for(config: HarnessConfig) -> float:
+    engines = {config.roster.engine, *config.roster.engines.values()}
+    return LOCAL_LEASE_TTL_S if engines & {"local", "vllm"} else 900.0
 
 
 def probe_cache_path(config: HarnessConfig) -> Path:
@@ -372,6 +384,8 @@ def build_deps(
         breaker=breaker,
         clock=clock,
         logger=logger,
+        lease_ttl_s=lease_ttl_for(config),
+        gpu_time=GpuTime(clock=clock),
         blocker_is_closed=resolved_forge.blocker_closed if resolved_forge is not None else None,
     )
     return deps, unbound, resolved_forge

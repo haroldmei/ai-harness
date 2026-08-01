@@ -41,10 +41,22 @@ class Worker:
     queue: Queue
     worker_id: str = "worker"
     batch: int = 1
+    host_concurrency: int = 1
+    """The ceiling the *host* imposes, as opposed to the batch the caller asked for. On a local
+    roster this is 1 because there is one card, and a claim this worker cannot act on is a run
+    held out of reach of the worker that could (L9)."""
     logger: Logger = field(default_factory=Logger)
 
     async def work(self, *, repo: str | None = None) -> WorkReport:
-        claims = await self.queue.claim(worker_id=self.worker_id, limit=self.batch, repo=repo)
+        limit = max(min(self.batch, self.host_concurrency), 1)
+        if limit < self.batch:
+            self.logger.info(
+                "batch reduced to the host's concurrency",
+                requested=self.batch,
+                allowed=limit,
+                reason="this host serves one model call at a time",
+            )
+        claims = await self.queue.claim(worker_id=self.worker_id, limit=limit, repo=repo)
         if not claims:
             self.logger.info("no work available", worker=self.worker_id, repo=repo)
             return WorkReport(worker_id=self.worker_id)

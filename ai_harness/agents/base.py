@@ -24,6 +24,7 @@ from ai_harness.kernel.ids import digest
 from ai_harness.kernel.outcome import Outcome
 from ai_harness.llm.client import LLMClient
 from ai_harness.llm.engines.protocol import Completion, EngineCapabilities, LLMRequest
+from ai_harness.llm.pacing import Pace
 from ai_harness.llm.structured import call_structured
 
 PROMPTS = Path(__file__).parent / "prompts"
@@ -58,6 +59,11 @@ class Agent[TOut: BaseModel]:
     max_tokens: int = 8192
     repair_limit: int = 2
     timeout_s: float = 900.0
+    pace: Pace | None = None
+    """When present, the timeout is derived from this box's measured decode rate instead of the
+    flat default (#89). One number for every call is either far too generous for a triage or far
+    too tight for a whole-file IMPLEMENT, and the second is how nearly-finished generation gets
+    thrown away."""
 
     def template(self) -> str:
         """The versioned prompt text. A change here changes ``template_id`` by convention."""
@@ -75,12 +81,17 @@ class Agent[TOut: BaseModel]:
     ) -> Outcome[AgentCall]:
         """Render, dispatch, validate, repair — once, in one place."""
         rendered = prompt.render()
+        timeout_s = self.timeout_s
+        if self.pace is not None:
+            timeout_s = self.pace.timeout_for(
+                prompt_tokens=len(rendered) // 4, max_tokens=self.max_tokens
+            )
         request = LLMRequest(
             prompt=rendered,
             model=self.model,
             max_tokens=self.max_tokens,
             template_id=self.template_id,
-            timeout_s=self.timeout_s,
+            timeout_s=timeout_s,
         )
         engine = _BudgetedEngine(
             client=self.client, run=run, state=state, round_=round_, attempt=attempt

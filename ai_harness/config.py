@@ -145,6 +145,10 @@ class HarnessConfig(BaseSettings):
     tier: Tier | None = None
     log_level: str = "info"
     log_format: str = "json"
+    host_concurrency: int = 1
+    """How many runs this host may advance at once. One is not a placeholder: a local roster
+    serves one model call at a time, so a second concurrent run does not double throughput --
+    it halves it and adds model swaps on top (L9). A hosted roster can raise it."""
     state_dir: Path = Path(".harness/state")
     lease_dir: Path = Path("/tmp/ai-harness-leases")
     database_url: str = "sqlite:///.harness/state/harness.db"
