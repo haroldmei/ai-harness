@@ -16,6 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]
+otel = [
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp-proto-http>=1.25",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -62,6 +66,11 @@ disallow_any_generics = true
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
+
+# The OTel SDK is an optional extra; its absence is a supported state (see tracing.py).
+[[tool.mypy.overrides]]
+module = ["opentelemetry.*"]
+ignore_missing_imports = true
 
 # ── tests ─────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]

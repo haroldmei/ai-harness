@@ -17,7 +17,7 @@ from datetime import timedelta
 from typing import Any
 
 from ai_harness.kernel.clock import Clock, SystemClock
-from ai_harness.kernel.lease import LeaseManager
+from ai_harness.kernel.lease import LeaseManager, run_lease_key
 from ai_harness.observability.logging import Logger
 from ai_harness.persistence.sql import SqlStore
 from ai_harness.providers.forge.protocol import Forge
@@ -104,7 +104,9 @@ class Reconciler:
         for run in await self.store.list_runs(repo=repo, status=RunStatus.RUNNING, limit=200):
             if run.updated_at is not None and run.updated_at > cutoff:
                 continue
-            handle = await self.leases.acquire(f"run:{run.run_id}", ttl_s=1.0, holder="reconciler")
+            handle = await self.leases.acquire(
+                run_lease_key(run.run_id), ttl_s=1.0, holder="reconciler"
+            )
             if handle is None:
                 continue  # someone is genuinely working on it
             await self.leases.release(handle)

@@ -29,7 +29,7 @@ from typing import Any
 from ai_harness.kernel.budget import CircuitBreaker
 from ai_harness.kernel.clock import Clock, SystemClock
 from ai_harness.kernel.ids import idempotency_key
-from ai_harness.kernel.lease import LeaseManager
+from ai_harness.kernel.lease import LeaseManager, run_lease_key
 from ai_harness.kernel.outcome import ErrorCategory, Outcome
 from ai_harness.observability.logging import Logger
 from ai_harness.orchestration.registry import Registry
@@ -62,7 +62,9 @@ class Deps:
 
 async def run_until_boundary(run_id: str, worker_id: str, deps: Deps) -> RunStatus:
     """Execute one run from its current checkpoint until it parks or terminates."""
-    async with deps.leases.hold(f"run:{run_id}", ttl_s=deps.lease_ttl_s, holder=worker_id) as lease:
+    async with deps.leases.hold(
+        run_lease_key(run_id), ttl_s=deps.lease_ttl_s, holder=worker_id
+    ) as lease:
         if lease is None:
             # Someone else owns it. Not an error — the normal outcome of concurrent dispatch.
             deps.logger.info("run is owned by another worker", run_id=run_id)

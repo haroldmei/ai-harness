@@ -28,6 +28,18 @@ from typing import Protocol
 
 from ai_harness.kernel.clock import Clock, SystemClock
 
+RUN_LEASE_PREFIX = "run:"
+
+
+def run_lease_key(run_id: str) -> str:
+    """The lease key for a run.
+
+    One function rather than three f-strings, because the queue now *reads* these keys to skip
+    runs another worker is holding — and a key format that disagreed between the writer and the
+    reader would fail silently, as a queue that hands out work nobody can act on.
+    """
+    return f"{RUN_LEASE_PREFIX}{run_id}"
+
 
 @dataclass
 class LeaseHandle:
