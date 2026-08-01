@@ -35,6 +35,13 @@ class BudgetSpec(BaseModel):
     max_tokens: int | None = Field(default=None, gt=0)
     max_attempts_per_state: dict[str, int] = Field(default_factory=dict)
 
+    max_model_seconds_per_run: float | None = Field(default=None, gt=0)
+    """The local rail (L5). At $0.000133 a GPU-second the dollar ceilings cannot trip in a
+    working day, and the scarce resource has moved: one card, one agent, and a REVIEW round that
+    takes minutes. Reserved before dispatch and settled against actual generation time, exactly
+    like the dollar ceiling — W3's fix applied to the currency that now binds."""
+    max_gpu_seconds_per_repo_day: float | None = Field(default=None, gt=0)
+
     @property
     def configured(self) -> bool:
         return self.max_usd_per_run is not None and self.max_usd_per_repo_day is not None
@@ -46,6 +53,30 @@ DEFAULT_BUDGET = BudgetSpec(
     max_wall_clock_s=6 * 60 * 60,
 )
 """The Q6 defaults, shipped so a first run is bounded rather than unbounded."""
+
+LOCAL_BUDGET = BudgetSpec(
+    max_usd_per_run=Decimal("25"),
+    max_usd_per_repo_day=Decimal("500"),
+    max_wall_clock_s=6 * 60 * 60,
+    max_model_seconds_per_run=2 * 60 * 60,
+    max_gpu_seconds_per_repo_day=16 * 60 * 60,
+)
+"""The same ceilings plus the two that can actually trip on a local roster: two hours of
+generation for one run, sixteen hours of card per repository per day. A run that needs more than
+two hours of *generation* -- not wall-clock, generation -- is not converging."""
+
+
+SELF_HOSTED: frozenset[str] = frozenset({"local"})
+"""Providers whose calls occupy *this* box's card.
+
+It lives beside :class:`CostEvent` rather than in the price table because it is a fact about
+*which resource is being spent*, and both the cost store and the client need it without either
+of them being allowed to know about the other.
+"""
+
+
+def is_self_hosted(provider: str) -> bool:
+    return provider in SELF_HOSTED
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +94,9 @@ class CostEvent:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     template_id: str | None = None
+    gpu_seconds: float = 0.0
+    """Seconds this call occupied *our* card. Zero for a hosted provider: their capacity is not
+    the resource this box runs out of."""
     at: datetime | None = None
 
     @property
@@ -79,6 +113,8 @@ class CostTracker:
         self._by_run: dict[str, Decimal] = defaultdict(Decimal)
         self._by_repo_day: dict[tuple[str, date], Decimal] = defaultdict(Decimal)
         self._tokens_by_run: dict[str, int] = defaultdict(int)
+        self._seconds_by_run: dict[str, float] = defaultdict(float)
+        self._seconds_by_repo_day: dict[tuple[str, date], float] = defaultdict(float)
 
     def record(self, event: CostEvent) -> CostEvent:
         stamped = event if event.at else _with_time(event, self._clock.now())
@@ -87,6 +123,8 @@ class CostTracker:
         self._by_run[stamped.run_id] += stamped.usd
         self._by_repo_day[(stamped.repo, day)] += stamped.usd
         self._tokens_by_run[stamped.run_id] += stamped.tokens
+        self._seconds_by_run[stamped.run_id] += stamped.gpu_seconds
+        self._seconds_by_repo_day[(stamped.repo, day)] += stamped.gpu_seconds
         return stamped
 
     def run_total(self, run_id: str) -> Decimal:
@@ -97,6 +135,14 @@ class CostTracker:
 
     def repo_day_total(self, repo: str, day: date | None = None) -> Decimal:
         return self._by_repo_day[(repo, day or self._clock.now().date())]
+
+    def run_seconds(self, run_id: str) -> float:
+        """Generation seconds on this box's card. Not wall-clock: tests and Docker are not the
+        GPU, and the whole point of `selfhost.md`'s "the GPU is idle" claim is the difference."""
+        return self._seconds_by_run[run_id]
+
+    def repo_day_seconds(self, repo: str, day: date | None = None) -> float:
+        return self._seconds_by_repo_day[(repo, day or self._clock.now().date())]
 
     @property
     def events(self) -> list[CostEvent]:
@@ -116,6 +162,7 @@ def _with_time(event: CostEvent, at: datetime) -> CostEvent:
         cache_read_tokens=event.cache_read_tokens,
         cache_write_tokens=event.cache_write_tokens,
         template_id=event.template_id,
+        gpu_seconds=event.gpu_seconds,
         at=at,
     )
 
@@ -137,10 +184,11 @@ class BreakerVerdict:
 
 @dataclass
 class Reservation:
-    """An estimate held against a run's ceiling until the actual cost is known."""
+    """An estimate held against a run's ceilings until the actual cost is known."""
 
     run_id: str
     estimate_usd: Decimal
+    estimate_seconds: float = 0.0
     released: bool = False
 
 
@@ -172,6 +220,7 @@ class CircuitBreaker:
         self.tracker = tracker
         self._clock = clock or SystemClock()
         self._reserved: dict[str, Decimal] = defaultdict(Decimal)
+        self._reserved_seconds: dict[str, float] = defaultdict(float)
 
     def check(self, run: RunSpend) -> BreakerVerdict | None:
         """``None`` means proceed. Anything else terminates the run as escalated."""
@@ -198,6 +247,29 @@ class CircuitBreaker:
                 reason="repo daily ceiling reached",
                 detail=f"{run.repo} spent ${repo_spend} today of ${self.budget.max_usd_per_repo_day}",
             )
+        seconds = self.committed_seconds(run.run_id)
+        if (
+            self.budget.max_model_seconds_per_run is not None
+            and seconds >= self.budget.max_model_seconds_per_run
+        ):
+            return BreakerVerdict(
+                reason="model-time ceiling reached",
+                detail=(
+                    f"{seconds:.0f}s of generation on this box's GPU, of "
+                    f"{self.budget.max_model_seconds_per_run:.0f}s. At local rates the dollar "
+                    "ceiling cannot trip in a working day; this is the one that binds"
+                ),
+            )
+        repo_seconds = self.tracker.repo_day_seconds(run.repo)
+        if (
+            self.budget.max_gpu_seconds_per_repo_day is not None
+            and repo_seconds >= self.budget.max_gpu_seconds_per_repo_day
+        ):
+            return BreakerVerdict(
+                reason="repo daily GPU ceiling reached",
+                detail=f"{run.repo} used {repo_seconds:.0f}s of card today of "
+                f"{self.budget.max_gpu_seconds_per_repo_day:.0f}s",
+            )
         if self.budget.max_tokens is not None and run.tokens >= self.budget.max_tokens:
             return BreakerVerdict(
                 reason="token ceiling reached",
@@ -222,7 +294,12 @@ class CircuitBreaker:
         """Spent plus reserved. Reservations count, or two concurrent calls both fit."""
         return self.tracker.run_total(run_id) + self._reserved[run_id]
 
-    def reserve(self, run: RunSpend, estimate_usd: Decimal) -> Outcome[Reservation]:
+    def committed_seconds(self, run_id: str) -> float:
+        return self.tracker.run_seconds(run_id) + self._reserved_seconds[run_id]
+
+    def reserve(
+        self, run: RunSpend, estimate_usd: Decimal, estimate_seconds: float = 0.0
+    ) -> Outcome[Reservation]:
         """Hold an estimate before dispatch. A denial parks the run *before* the call."""
         verdict = self.check(run)
         if verdict is not None:
@@ -240,8 +317,31 @@ class CircuitBreaker:
                     )
                 )
             )
+        projected_seconds = self.committed_seconds(run.run_id) + estimate_seconds
+        if (
+            self.budget.max_model_seconds_per_run is not None
+            and projected_seconds > self.budget.max_model_seconds_per_run
+        ):
+            return Outcome[Reservation].of(
+                _verdict_error(
+                    BreakerVerdict(
+                        reason="reservation would exceed the run's model-time ceiling",
+                        detail=(
+                            f"{self.committed_seconds(run.run_id):.0f}s committed + "
+                            f"{estimate_seconds:.0f}s estimated > "
+                            f"{self.budget.max_model_seconds_per_run:.0f}s"
+                        ),
+                    )
+                )
+            )
+
         self._reserved[run.run_id] += estimate_usd
-        return Outcome.ok(Reservation(run_id=run.run_id, estimate_usd=estimate_usd))
+        self._reserved_seconds[run.run_id] += estimate_seconds
+        return Outcome.ok(
+            Reservation(
+                run_id=run.run_id, estimate_usd=estimate_usd, estimate_seconds=estimate_seconds
+            )
+        )
 
     def settle(self, reservation: Reservation, event: CostEvent | None = None) -> None:
         """Release a reservation and record what was actually spent."""
@@ -250,6 +350,9 @@ class CircuitBreaker:
         self._reserved[reservation.run_id] -= reservation.estimate_usd
         if self._reserved[reservation.run_id] < 0:
             self._reserved[reservation.run_id] = Decimal(0)
+        self._reserved_seconds[reservation.run_id] -= reservation.estimate_seconds
+        if self._reserved_seconds[reservation.run_id] < 0:
+            self._reserved_seconds[reservation.run_id] = 0.0
         reservation.released = True
         if event is not None:
             self.tracker.record(event)

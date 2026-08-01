@@ -15,7 +15,19 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+from ai_harness.kernel.budget import SELF_HOSTED, is_self_hosted
 from ai_harness.llm.engines.protocol import Usage
+
+__all__ = [
+    "MTOK",
+    "SELF_HOSTED",
+    "Rate",
+    "cloud_equivalent",
+    "is_priced",
+    "is_self_hosted",
+    "price",
+    "rate_for",
+]
 
 MTOK = Decimal(1_000_000)
 
@@ -42,7 +54,30 @@ _TABLE: dict[tuple[str, str], list[Rate]] = {
         Rate(Decimal("1"), Decimal("5"), Decimal("0.10"), Decimal("1.25"))
     ],
     ("openai", "gpt-5"): [Rate(Decimal("10"), Decimal("30"))],
+    # A locally served model is priced, not free (L5). The empty model string is a prefix of
+    # every model name, so this is the provider's default rate and a new local model needs no
+    # table entry to be accounted for.
+    #
+    # The derivation, so the number can be argued with rather than trusted:
+    #
+    #   power      : ~450 W at the wall for the whole box under generation load
+    #   tariff     : $0.30/kWh  ⇒  $0.135/hour
+    #   amortising : $3 000 of card over three years at eight hours a day (8 760 h)
+    #                                                   ⇒  $0.342/hour
+    #   total      : ~$0.48/hour  ⇒  $0.000133 per GPU-second
+    #
+    #   output     : 30 tok/s (the pessimistic bound of selfhost.md)
+    #                1 Mtok = 33 333 s = $4.44
+    #   input      : ~2 000 tok/s prefill
+    #                1 Mtok = 500 s = $0.07
+    #
+    # Both are rounded down: a local rate that over-states cost would make the comparison
+    # against a hosted roster flattering for the wrong reason. Re-derive from `agent serving
+    # bench` once this box's real rates are measured (#81) -- the entry carries an
+    # effective_from so re-deriving does not rewrite history.
+    ("local", ""): [Rate(Decimal("0.07"), Decimal("4.44"), effective_from=date(2026, 8, 1))],
 }
+
 
 UNKNOWN_MODEL_RATE = Rate(Decimal("5"), Decimal("25"))
 """Used when a model is unpriced. Deliberately not zero: an unknown price must not read as free."""
@@ -83,3 +118,26 @@ def price(usage: Usage, *, provider: str, model: str, at: datetime | None = None
 def is_priced(provider: str, model: str) -> bool:
     """False when the fallback rate would be used — surfaced so the gap is visible."""
     return rate_for(provider, model)[1]
+
+
+def cloud_equivalent(
+    usage: Usage, *, provider: str = "anthropic", model: str = "claude-sonnet-5"
+) -> Decimal:
+    """What the same tokens would have cost on a hosted roster.
+
+    This is the number that justifies the phase, and it is a subtraction rather than a
+    re-instrumentation precisely because a local model is priced in the same currency (L5).
+    Cache reads are priced at the hosted rate too — otherwise a local run that hit its prefix
+    cache would look better than the hosted alternative for a reason that has nothing to do with
+    where the model runs.
+    """
+    return price(
+        Usage(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+        ),
+        provider=provider,
+        model=model,
+    )

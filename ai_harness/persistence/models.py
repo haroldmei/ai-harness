@@ -27,6 +27,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     Dialect,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -256,6 +257,9 @@ class CostRow(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cache_read_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cache_write_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    gpu_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    """Seconds this call held *our* card. Zero for a hosted provider: the resource this box
+    runs out of is the GPU, and a hosted call does not consume it (L5)."""
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 

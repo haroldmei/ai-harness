@@ -24,7 +24,7 @@ from typing import Any, TypeVar
 from sqlalchemy import Engine, create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from ai_harness.kernel.budget import CostEvent
+from ai_harness.kernel.budget import CostEvent, is_self_hosted
 from ai_harness.kernel.clock import Clock, SystemClock
 from ai_harness.persistence.models import (
     ApprovalRow,
@@ -299,6 +299,7 @@ class SqlStore:
                     output_tokens=event.output_tokens,
                     cache_read_tokens=event.cache_read_tokens,
                     cache_write_tokens=event.cache_write_tokens,
+                    gpu_seconds=event.gpu_seconds,
                     at=at,
                 )
             )
@@ -341,12 +342,21 @@ class SqlStore:
             for row in rows:
                 key = row.template_id or ""
                 by_template[key] = by_template.get(key, Decimal(0)) + row.usd
+            # Local and hosted spend are different questions -- "what did the box cost to run"
+            # and "what did we pay someone" -- and a single total answers neither (L5).
+            local = [r for r in rows if is_self_hosted(r.provider or "")]
+            hosted = [r for r in rows if not is_self_hosted(r.provider or "")]
             return {
                 "calls": len(rows),
                 "usd": str(sum((r.usd for r in rows), Decimal(0))),
+                "local_usd": str(sum((r.usd for r in local), Decimal(0))),
+                "hosted_usd": str(sum((r.usd for r in hosted), Decimal(0))),
+                "local_calls": len(local),
+                "hosted_calls": len(hosted),
                 "input_tokens": sum(r.input_tokens for r in rows),
                 "output_tokens": sum(r.output_tokens for r in rows),
                 "cache_read_tokens": sum(r.cache_read_tokens for r in rows),
+                "gpu_seconds": round(sum(r.gpu_seconds for r in rows), 1),
                 "by_template": {k: str(v) for k, v in sorted(by_template.items())},
                 "by_run": _group(rows, lambda r: r.run_id),
                 "by_repo": _group(rows, lambda r: r.repo),

@@ -28,7 +28,7 @@ from ai_harness.kernel.retry import BreakerRegistry, call_with_retry
 from ai_harness.kernel.tokens import CalibratedCounter
 from ai_harness.llm.engines.protocol import Completion, Engine, LLMRequest
 from ai_harness.llm.engines.routing import FALLBACK_WORTHY
-from ai_harness.llm.pricing import price, rate_for
+from ai_harness.llm.pricing import is_self_hosted, price, rate_for
 from ai_harness.schemas.telemetry import Span
 
 
@@ -55,6 +55,10 @@ class LLMClient:
     sink: SpanSink = field(default_factory=NullSink)
     fallback_limit: int = 3
     """How many hosted fallbacks one run may take before the local failure escalates (L7)."""
+    decode_tps: float = 30.0
+    """Tokens per second of generation, used to reserve model-time before dispatch. The
+    pessimistic bound until #81 measures this box."""
+    prefill_tps: float = 2000.0
     counter: CalibratedCounter | None = None
     """Calibrated from every completion's reported prompt tokens. No call is made to learn the
     model's characters-per-token ratio; the calls the harness already makes report it."""
@@ -70,7 +74,9 @@ class LLMClient:
     ) -> Outcome[Completion]:
         reservation = None
         if self.breaker is not None and run is not None:
-            reserved = self.breaker.reserve(run, self.estimate(request))
+            reserved = self.breaker.reserve(
+                run, self.estimate(request), self.estimate_seconds(request)
+            )
             if reserved.is_err:
                 assert reserved.error is not None
                 return Outcome.of(reserved.error)
@@ -128,6 +134,10 @@ class LLMClient:
                 cache_read_tokens=completion.usage.cache_read_tokens,
                 cache_write_tokens=completion.usage.cache_write_tokens,
                 template_id=request.template_id,
+                # Only our own card counts: a hosted provider's capacity is not the resource
+                # this box runs out of, and charging their latency to our GPU ceiling would
+                # make a fallback look like local congestion.
+                gpu_seconds=duration if is_self_hosted(completion.provider) else 0.0,
             )
         if self.breaker is not None and reservation is not None:
             self.breaker.settle(reservation, event)
@@ -177,6 +187,21 @@ class LLMClient:
         return (
             approx_input_tokens * rate.input_ + Decimal(request.max_tokens) * rate.output
         ) / Decimal(1_000_000)
+
+    def estimate_seconds(self, request: LLMRequest) -> float:
+        """A pre-call upper bound on generation time, from the measured rates.
+
+        The defaults are `selfhost.md`'s pessimistic bound rather than a measurement, which is
+        the safe direction: over-estimating reserves too much time and denies early, and
+        under-estimating is how a run discovers its ceiling after spending it. `agent serving
+        bench` replaces them with this box's real numbers (#81).
+        """
+        if not is_self_hosted(self.engine.name):
+            return 0.0
+        prompt_chars = len(request.prompt) + len(request.system)
+        prefill = (prompt_chars / 4) / max(self.prefill_tps, 1.0)
+        decode = request.max_tokens / max(self.decode_tps, 1.0)
+        return prefill + decode
 
     def _emit(
         self,
