@@ -153,6 +153,9 @@ class RunSpend:
     started_at: datetime
     tokens: int = 0
     attempts_by_state: dict[str, int] = field(default_factory=dict)
+    fallbacks: int = 0
+    """Calls a hosted engine took because the local one could not. Counted here because this is
+    the object that knows which run this is (L7)."""
 
 
 class CircuitBreaker:

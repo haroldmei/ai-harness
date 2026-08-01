@@ -94,6 +94,8 @@ def build_engine(config: HarnessConfig, *, logger: Logger | None = None) -> Engi
     through whichever engine happened to be first — the same class of bug as an unknown tier
     defaulting to the weakest gate set.
     """
+    if config.roster.engines:
+        return build_router(config, logger=logger)
     name = config.roster.engine
     if name == "claude-cli":
         from ai_harness.llm.engines.claude_cli import ClaudeCLIEngine
@@ -117,6 +119,69 @@ def build_engine(config: HarnessConfig, *, logger: Logger | None = None) -> Engi
         f"unknown engine {name!r}; expected claude-cli, anthropic, openai or local. "
         "Nothing is defaulted here on purpose: a typo would silently change every model call."
     )
+
+
+def roster_models(config: HarnessConfig) -> dict[Role, str]:
+    """The five role→model bindings, in one place, so nothing re-derives them differently."""
+    return {
+        Role.PLANNER: config.roster.planner_model,
+        Role.IMPLEMENTER: config.roster.implementer_model,
+        Role.REVIEWER: config.roster.reviewer_model,
+        Role.CONFLICT_RESOLVER: config.roster.conflict_resolver_model,
+        Role.TRIAGER: config.roster.triager_model,
+    }
+
+
+def build_router(config: HarnessConfig, *, logger: Logger | None = None) -> Engine:
+    """One engine per model — the shape a local roster actually has.
+
+    Every model the roster names must be routable *before* anything is claimed. The alternative
+    is discovering at REVIEW that the reviewer's model was never served, which costs a run, and
+    which the roster's own reviewer-≠-implementer refusal exists to make impossible in the other
+    direction.
+    """
+    from ai_harness.llm.engines.routing import RoutingEngine, RoutingError
+
+    named = {model for model in roster_models(config).values() if model}
+    unmapped = sorted(named - set(config.roster.engines))
+    if unmapped:
+        # The same rule as `build_engine`, one level down. Falling back to `roster.engine` here
+        # would send a mistyped local model name to the cloud CLI, and the resulting review
+        # would look exactly like a real one.
+        raise WiringError(
+            f"roster.engines names no engine for {', '.join(unmapped)}. A mixed roster must map "
+            "every model explicitly: defaulting would route a typo somewhere plausible."
+        )
+    routes: dict[str, Engine] = {}
+    for model in sorted(named):
+        routes[model] = _engine_named(
+            config.roster.engines[model], config, model=model, logger=logger
+        )
+
+    fallbacks: dict[str, Engine] = {}
+    if config.roster.fallback_engine:
+        target = _engine_named(config.roster.fallback_engine, config, logger=logger)
+        for model in config.roster.fallback_models:
+            fallbacks[model] = target
+
+    try:
+        router = RoutingEngine(routes=routes, fallbacks=fallbacks)
+        router.requires(*named)
+    except RoutingError as exc:
+        raise WiringError(str(exc)) from exc
+    return router
+
+
+def _engine_named(
+    name: str, config: HarnessConfig, *, model: str | None = None, logger: Logger | None = None
+) -> Engine:
+    """Build one engine by name, without consulting the roster's own default."""
+    scoped = config.model_copy(deep=True)
+    scoped.roster.engines = {}
+    scoped.roster.engine = name
+    if model is not None and name in ("local", "vllm"):
+        return build_local_engine(scoped, model=model, logger=logger)
+    return build_engine(scoped, logger=logger)
 
 
 def probe_cache_path(config: HarnessConfig) -> Path:
@@ -283,15 +348,7 @@ def build_deps(
     clock = clock or SystemClock()
     logger = logger or Logger()
 
-    roster = AgentRoster(
-        models={
-            Role.PLANNER: config.roster.planner_model,
-            Role.IMPLEMENTER: config.roster.implementer_model,
-            Role.REVIEWER: config.roster.reviewer_model,
-            Role.CONFLICT_RESOLVER: config.roster.conflict_resolver_model,
-            Role.TRIAGER: config.roster.triager_model,
-        }
-    )
+    roster = AgentRoster(models=roster_models(config))
 
     tracker = CostTracker(clock=clock)
     breaker = CircuitBreaker(config.policy.budget, tracker, clock=clock)
@@ -300,6 +357,7 @@ def build_deps(
         tracker=tracker,
         breaker=breaker,
         clock=clock,
+        fallback_limit=config.roster.max_fallbacks_per_run,
     )
     resolved_forge = forge if forge is not None else build_forge(config)
 

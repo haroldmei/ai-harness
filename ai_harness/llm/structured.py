@@ -130,6 +130,7 @@ def _repair_request(request: LLMRequest, problem: str, schema_text: str) -> LLMR
         schema=request.schema,
         stop=list(request.stop),
         timeout_s=request.timeout_s,
+        allow_fallback=request.allow_fallback,
     )
 
 

@@ -15,7 +15,7 @@ The span contract is the shell's, verbatim: **telemetry never fails the caller.*
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Protocol
 from uuid import uuid4
@@ -23,9 +23,10 @@ from uuid import uuid4
 from ai_harness.kernel.budget import CircuitBreaker, CostEvent, CostTracker, RunSpend
 from ai_harness.kernel.clock import Clock, SystemClock
 from ai_harness.kernel.ids import digest
-from ai_harness.kernel.outcome import Outcome
+from ai_harness.kernel.outcome import ErrorCategory, Outcome
 from ai_harness.kernel.retry import BreakerRegistry, call_with_retry
 from ai_harness.llm.engines.protocol import Completion, Engine, LLMRequest
+from ai_harness.llm.engines.routing import FALLBACK_WORTHY
 from ai_harness.llm.pricing import price, rate_for
 from ai_harness.schemas.telemetry import Span
 
@@ -51,6 +52,8 @@ class LLMClient:
     breakers: BreakerRegistry = field(default_factory=BreakerRegistry)
     clock: Clock = field(default_factory=SystemClock)
     sink: SpanSink = field(default_factory=NullSink)
+    fallback_limit: int = 3
+    """How many hosted fallbacks one run may take before the local failure escalates (L7)."""
 
     async def complete(
         self,
@@ -69,14 +72,27 @@ class LLMClient:
                 return Outcome.of(reserved.error)
             reservation = reserved.unwrap()
 
+        # L7: a run gets an allowance of hosted fallbacks, and once it is spent the local
+        # failure surfaces as an escalation rather than as more spending. The switch is set here
+        # because this is where the run is known; the router only knows models.
+        dispatched = request
+        allowance_spent = (
+            run is not None and self.fallback_limit >= 0 and run.fallbacks >= self.fallback_limit
+        )
+        if allowance_spent and request.allow_fallback:
+            dispatched = replace(request, allow_fallback=False)
+
         started = self.clock.monotonic()
         outcome = await call_with_retry(
-            lambda: self.engine.complete(request),
+            lambda: self.engine.complete(dispatched),
             dependency=f"model:{self.engine.name}",
             clock=self.clock,
             breakers=self.breakers,
         )
         duration = self.clock.monotonic() - started
+        fallback = _fallback_of(outcome)
+        if fallback is not None and run is not None:
+            run.fallbacks += 1
 
         usd = Decimal(0)
         completion: Completion | None = None
@@ -119,7 +135,30 @@ class LLMClient:
             state=state,
             round_=round_,
             attempt=attempt,
+            fallback=fallback,
         )
+
+        if outcome.is_err and allowance_spent:
+            error = outcome.error
+            assert error is not None
+            if error.category in FALLBACK_WORTHY:
+                # The local model failed in a way a hosted one could have survived, and this run
+                # has already used its allowance. Escalating here is the honest end: continuing
+                # would turn "no per-token cost" into a number nobody agreed to.
+                return Outcome.fail(
+                    ErrorCategory.NEEDS_HUMAN,
+                    f"the local model is unavailable and this run has already used its "
+                    f"{self.fallback_limit} hosted fallback(s)",
+                    remedy=(
+                        f"the underlying failure was: {error.message}. Fix the serving stack, or "
+                        "raise roster.max_fallbacks_per_run deliberately — it is the ceiling that "
+                        "keeps a local run from silently becoming a paid one"
+                    ),
+                    details={
+                        "underlying": str(error.category),
+                        "fallbacks_used": run.fallbacks if run else 0,
+                    },
+                )
         return outcome
 
     def estimate(self, request: LLMRequest) -> Decimal:
@@ -142,6 +181,7 @@ class LLMClient:
         state: str | None,
         round_: int,
         attempt: int,
+        fallback: dict[str, str] | None = None,
     ) -> None:
         try:
             prompt_material = request.system + request.prompt
@@ -165,7 +205,18 @@ class LLMClient:
                 template_id=request.template_id,
                 prompt_sha256=digest(prompt_material),
                 prompt_bytes=len(prompt_material.encode("utf-8", "replace")),
+                attributes=(
+                    {f"fallback.{k}": str(v) for k, v in fallback.items()} if fallback else {}
+                ),
             )
             self.sink.emit(span)
         except Exception:  # telemetry never fails the caller — the shell's contract, kept
             return
+
+
+def _fallback_of(outcome: Outcome[Completion]) -> dict[str, str] | None:
+    """The router marks a completion it did not get from the primary engine. Nothing else does."""
+    if outcome.is_err:
+        return None
+    marker = outcome.unwrap().raw.get("fallback")
+    return {str(k): str(v) for k, v in marker.items()} if isinstance(marker, dict) else None

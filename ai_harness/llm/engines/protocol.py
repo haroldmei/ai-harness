@@ -66,6 +66,10 @@ class LLMRequest:
     """Passed natively when the engine supports it; otherwise rendered into the prompt."""
     stop: list[str] = field(default_factory=list)
     timeout_s: float = 900.0
+    allow_fallback: bool = True
+    """Whether a router may hand this call to a configured fallback engine. Set to False by the
+    client once a run has used its allowance, so the ceiling on "$0 runs that quietly cost
+    money" is enforced where the run is known rather than where the routing is (L7)."""
 
 
 @dataclass(frozen=True, slots=True)

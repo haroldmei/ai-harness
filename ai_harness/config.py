@@ -112,6 +112,23 @@ class Roster(BaseModel):
     conflict_resolver_model: str = "claude-opus-5"
     triager_model: str = "claude-haiku-4-5-20251001"
 
+    engines: dict[str, str] = Field(default_factory=dict)
+    """Per-model engine names, for a roster that is not served by one vendor. Locally the two
+    roles are two servers on two ports, so ``engine`` alone cannot express the roster. When this
+    is non-empty a router is built and **every** model the roster names must appear here — an
+    unlisted model is a startup error, because defaulting would route a typo somewhere
+    plausible."""
+
+    fallback_engine: str | None = None
+    """Where a call goes when the local one cannot answer. ``None`` — the default — means a
+    local outage defers the run rather than quietly spending money (L7)."""
+    fallback_models: tuple[str, ...] = ()
+    """Which models may fall back. Opt-in per model, so the reviewer can be allowed to and the
+    implementer not, or the other way round."""
+    max_fallbacks_per_run: int = 3
+    """After this many, a local failure escalates instead of being papered over. The number is
+    the difference between "$0" as a measurement and "$0" as a hope."""
+
 
 class HarnessConfig(BaseSettings):
     """The whole effective configuration for one invocation."""

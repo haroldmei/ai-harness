@@ -45,6 +45,9 @@ class EvidenceBlock:
     spend_usd: Decimal = Decimal(0)
     models: dict[str, str] = field(default_factory=dict)
     isolation: str = ""
+    fallbacks: list[str] = field(default_factory=list)
+    """Calls a hosted engine took because the local roster could not answer (L7). Shown, not
+    summed away: a run reported as costing nothing must not have quietly bought something."""
     diff_complete: bool = True
     elided_files: list[str] = field(default_factory=list)
     redactor: Redactor = field(default_factory=Redactor)
@@ -74,6 +77,12 @@ class EvidenceBlock:
             lines.append(
                 f"> **partial review** — {len(self.elided_files)} file(s) were not shown to the "
                 f"reviewer: {', '.join(self.elided_files[:5])}."
+            )
+        if self.fallbacks:
+            lines.append(
+                f"> **{len(self.fallbacks)} hosted fallback(s)** — the local roster could not "
+                f"answer and a hosted model did: {'; '.join(self.fallbacks[:3])}. This run was "
+                "not free."
             )
         if self.isolation and self.isolation == "none":
             lines.append(
