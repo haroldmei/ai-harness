@@ -157,6 +157,42 @@ def gates_run(
     raise typer.Exit(EXIT_OK if report.green else EXIT_RED)
 
 
+@gates_app.command("adopt")
+def gates_adopt(
+    path: Annotated[Path, typer.Argument(help="Repository root")] = Path(),
+    spine: Annotated[Path | None, typer.Option(help="Path to the shell spine")] = None,
+    scorecard: Annotated[Path | None, typer.Option(help="A --json scorecard, for timeouts")] = None,
+    out: Annotated[Path | None, typer.Option("--out", help="Write here instead of stdout")] = None,
+    tier: Annotated[str | None, typer.Option(help="Tier for the emitted profile")] = None,
+) -> None:
+    """Read a shell spine and PROPOSE the equivalent `.harness/gates.yaml`.
+
+    Writes nothing without `--out`. A gate declaration is the contract by which the harness is
+    allowed to merge, so a human reads this before it becomes one (Q9).
+    """
+    from ai_harness.quality.adopt import adopt
+
+    source = spine or (path / "scripts/quality-gates.sh")
+    if not source.exists():
+        typer.secho(f"no shell spine at {source}", fg="red", err=True)
+        raise typer.Exit(EXIT_NO_GATES)
+
+    adoption = adopt(source, scorecard=scorecard, root=path)
+    rendered = adoption.as_yaml(tier=_tier(tier))
+
+    if out is None:
+        typer.echo(rendered)
+    else:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(rendered)
+        typer.echo(f"written to {out}", err=True)
+
+    for item in adoption.unexpressible:
+        typer.secho(f"not adopted: {item.name} — {item.why}", fg="yellow", err=True)
+    if not adoption.gates:
+        raise typer.Exit(EXIT_NO_GATES)
+
+
 @config_app.command("show")
 def config_show(
     path: Annotated[Path, typer.Argument(help="Repository root")] = Path(),
