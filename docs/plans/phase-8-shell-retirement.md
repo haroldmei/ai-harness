@@ -184,17 +184,24 @@ Stated because retirement is exactly the moment these get quietly taken as well:
   lets them be replaced one at a time, or never"* — and never is a legitimate answer.
 - **Rung 5 stays a hard escalation.** No repository merges ungated because a spine moved.
 
-## The one open decision
+## D1 — decided: relocate
 
-**D1 — where does the app-builder's spine go?** S2 assumes the product has, or gets, its own
-repository. If it does not, the alternative is a marked `legacy/` directory in *this* repo,
-excluded from discovery (`ENTRY_POINTS` matches `scripts/`, not `legacy/`), archived at the tag
-and deleted at S6 without relocation.
+**Where does the app-builder's spine go? Its own repository.** Decided 2026-08-01; S2 is
+unblocked and the `legacy/` variant is dropped.
 
-Recommendation: **relocate**. The `legacy/` variant reaches the same end state but keeps the
-harness carrying a tenant for another release, and Q2's whole argument is that the coupling costs
-more the longer it is tolerated. Relocation also produces the first genuinely external target
-repository, which is what #94's soak needs anyway.
+The alternative — a marked `legacy/` directory here, excluded from discovery, archived at the tag
+and deleted at S6 — reaches the same end state while keeping the harness carrying a tenant for
+another release, and Q2's whole argument is that the coupling costs more the longer it is
+tolerated. Relocation also produces the first genuinely external target repository, which is what
+#94's soak needs regardless.
+
+Two consequences worth stating, because they are now commitments rather than options:
+
+* the app-builder repo becomes the **first real proving ground** for the ladder's rung 2 — the
+  harness meeting a repository on its own terms, which until now has only been tested against
+  fixtures;
+* `RepoProfile` gets exercised by a second repository, which is the thing Q2 said would keep it
+  honest.
 
 ## Risks
 
