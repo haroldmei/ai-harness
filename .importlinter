@@ -43,7 +43,7 @@ layers =
     ai_harness.quality | ai_harness.workspace | ai_harness.deploy
     ai_harness.llm | ai_harness.context | ai_harness.tools
     ai_harness.policies | ai_harness.security
-    ai_harness.providers | ai_harness.persistence | ai_harness.observability
+    ai_harness.providers | ai_harness.persistence | ai_harness.observability | ai_harness.product
     ai_harness.schemas
     ai_harness.kernel
 

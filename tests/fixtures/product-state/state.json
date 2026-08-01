@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "started_at": "FROZEN",
+  "scale_tier": "preview",
+  "current_phase": "iterate",
+  "phase_status": {},
+  "critic_verdicts": {},
+  "kill_switches": [],
+  "decisions": [],
+  "signal_sources": {
+    "posthog": {
+      "enabled": false,
+      "last_pull": null
+    },
+    "sentry": {
+      "enabled": false,
+      "last_pull": null
+    },
+    "support": {
+      "enabled": false,
+      "last_pull": null
+    }
+  },
+  "ml": {
+    "enabled": false,
+    "tier": "dashboard",
+    "task": null,
+    "relational": false,
+    "online": false,
+    "regulated": false,
+    "tracking": null,
+    "registry": null,
+    "serving": null,
+    "orchestrator": null,
+    "monitoring": null,
+    "decision": null,
+    "feasibility": {
+      "verdict": null,
+      "reasons": [],
+      "checked_at": null
+    },
+    "baseline": {
+      "metric": null,
+      "value": null,
+      "higher_is_better": true
+    },
+    "best_run": {
+      "id": null,
+      "metric": null,
+      "value": null,
+      "data_version": null,
+      "code_version": null
+    },
+    "gate_metrics": {}
+  },
+  "pointers": {
+    "product": "state/product.json",
+    "testing": "state/testing.json",
+    "findings": "state/findings.json"
+  }
+}

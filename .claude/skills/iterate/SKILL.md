@@ -166,7 +166,7 @@ subagent (Task tool) whose ONLY job is to **refute** `docs/06-gap-analysis.md`:
 
 Fold the critique back into `docs/06-gap-analysis.md` (re-rank, drop false gaps,
 demote imagined requirements) BEFORE Phase 3. Record the verdict in
-`state.json .critic_verdicts` via `scripts/state-set.sh` so the gate is auditable.
+`state.json .critic_verdicts` via `agent product set` so the gate is auditable.
 
 **Do not stop. Proceed immediately to Phase 3.**
 

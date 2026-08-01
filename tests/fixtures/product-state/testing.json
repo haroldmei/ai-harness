@@ -1,0 +1,12 @@
+{
+  "testing": {
+    "gate_attempts": {
+      "e2e": 3
+    },
+    "open_issues_drained": false,
+    "adversarial_rounds": 0,
+    "last_mutation_score": null,
+    "last_verdict": null,
+    "last_run_at": null
+  }
+}

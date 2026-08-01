@@ -1,0 +1,16 @@
+{
+  "initialized_at": "FROZEN",
+  "last_full_pull": null,
+  "behavior": {
+    "funnel_conversion": null,
+    "activation_24h": null,
+    "retention_d7": null
+  },
+  "failure": {
+    "top_issues": [],
+    "crash_free_rate": null
+  },
+  "voice": {
+    "themes": []
+  }
+}

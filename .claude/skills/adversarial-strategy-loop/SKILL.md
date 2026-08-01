@@ -217,13 +217,13 @@ Append to `docs/D10-strategy-adversary.md`:
 Persist a machine-readable summary:
 
 ```bash
-scripts/state-set.sh '.ml.strategy_adversary' "$(cat <<'JSON'
+agent product set '.ml.strategy_adversary' "$(cat <<'JSON'
 { "last_cycle": N, "checked_at": "<ISO8601>",
   "survivors": Y, "top_owner": "<skill>",
   "kill_switch_tripped": false }
 JSON
 )"
-scripts/state-decide.sh adversarial-strategy-loop \
+agent product decide adversarial-strategy-loop \
   "cycle N: Y survivors, top=<owner>" "<one-line rationale>"
 ```
 

@@ -27,7 +27,7 @@ waterfall.
    skill via `Skill` and report back a structured result. This gives
    you the fresh-context property without leaving Claude Code.
 2. **Blackboard state.** Persistent state lives in `state/state.json`.
-   The orchestrator updates it via `scripts/state-set.sh`. Subagents
+   The orchestrator updates it via `agent product set`. Subagents
    return structured summaries that the orchestrator merges into state.
 3. **Wedge is law.** After Phase 2, every subsequent subagent receives
    `docs/01c-wedge.md` in its context manifest and must embed the
@@ -92,7 +92,7 @@ Task(
 ```
 
 The orchestrator parses `PHASE_RESULT`, updates `state.json` via
-`scripts/state-set.sh`, and decides the next edge.
+`agent product set`, and decides the next edge.
 
 **Parallel fan-out** (Phase 7 implementation): emit multiple `Task`
 calls in a single message; they run concurrently. Wait for all to
@@ -136,7 +136,7 @@ Critic checklists per phase live in §"Critic checklists" below.
 
 ## State file: `state/state.json`
 
-Initialize on first run via `scripts/state-init.sh "<product idea>"`.
+Initialize on first run via `agent product init "<product idea>"`.
 Schema (defaults from the script):
 
 ```json
@@ -191,7 +191,7 @@ a structured object: `{ "id": "AT-<n>", "severity": ..., "surface": ...,
 "tags": ["adversarial"] }`. The `repro-tests` gate requires every still-open
 object issue to carry a `repro_test` that exists on disk (red-before-green).
 
-After every phase, run `scripts/state-decide.sh <phase> "<decision>" "<reason>"`
+After every phase, run `agent product decide <phase> "<decision>" "<reason>"`
 to append a one-line ADR.
 
 ---
@@ -340,7 +340,7 @@ template's "context manifest" slot).
 ### Phase 0 — Bootstrap (orchestrator runs directly)
 ```bash
 mkdir -p state docs
-scripts/state-init.sh "$ARGUMENTS"
+agent product init "$ARGUMENTS"
 git init 2>/dev/null || true
 ```
 
@@ -368,11 +368,11 @@ Fail → loop to `ceo` with `must_fix` as input.
 Subagent template, skill `differentiation`, manifest `[01]`, model `opus`.
 On done, the skill writes `01c-wedge.md`. Parse and run:
 ```bash
-scripts/state-set.sh '.wedge_sentence' "\"$WEDGE\""
-scripts/state-set.sh '.scale_tier'     "\"$TIER\""
-scripts/state-set.sh '.icp'            "\"$ICP\""
-scripts/state-set.sh '.axis'           "\"$AXIS\""
-scripts/state-set.sh '.anti_axis'      "\"$ANTI\""
+agent product set '.wedge_sentence' "\"$WEDGE\""
+agent product set '.scale_tier'     "\"$TIER\""
+agent product set '.icp'            "\"$ICP\""
+agent product set '.axis'           "\"$AXIS\""
+agent product set '.anti_axis'      "\"$ANTI\""
 ```
 
 ### Phase 2c — `diff_critic`
@@ -402,10 +402,10 @@ Subagent, skill `tech-stack-selector`, manifest `[01c]`, model `sonnet`.
 On done, the skill writes `docs/00-tech-stack.md`. Parse the resolved
 contract and persist key fields:
 ```bash
-scripts/state-set.sh '.tech_stack.ci_provider'  "\"$(yq '.ci.provider' docs/00-tech-stack.md)\""
-scripts/state-set.sh '.tech_stack.cloud'        "\"$(yq '.cloud.provider' docs/00-tech-stack.md)\""
-scripts/state-set.sh '.tech_stack.auth'         "\"$(yq '.auth.default' docs/00-tech-stack.md)\""
-scripts/state-set.sh '.tech_stack.ai_heavy'     "$([[ -n \"$(yq '.ai.cost_tracking // empty' docs/00-tech-stack.md)\" ]] && echo true || echo false)"
+agent product set '.tech_stack.ci_provider'  "\"$(yq '.ci.provider' docs/00-tech-stack.md)\""
+agent product set '.tech_stack.cloud'        "\"$(yq '.cloud.provider' docs/00-tech-stack.md)\""
+agent product set '.tech_stack.auth'         "\"$(yq '.auth.default' docs/00-tech-stack.md)\""
+agent product set '.tech_stack.ai_heavy'     "$([[ -n \"$(yq '.ai.cost_tracking // empty' docs/00-tech-stack.md)\" ]] && echo true || echo false)"
 ```
 
 ### Phase 2.7c — `stack_critic`
@@ -711,7 +711,7 @@ $ONELINER
 EOF
 
 # Persist for the Completion block.
-scripts/state-set.sh '.local_quickstart' "\"$ONELINER\""
+agent product set '.local_quickstart' "\"$ONELINER\""
 ```
 
 This phase is **non-skippable**. If `state/artifacts/db-migrator.json`
@@ -900,8 +900,10 @@ Create `docs/iterations/000-issue-<N>-<slug>.md` as iteration 0, then run `scrip
 - **Human checkpoints** — at the four high-leverage moments.
 - **Model routing** — Opus for taste, Sonnet for volume, Haiku for
   mechanical work.
-- **Real scripts** — `state-init.sh`, `state-set.sh`, `state-decide.sh`,
-  `quality-gates.sh`, `route-failure.sh` are actual files in `scripts/`.
+- **Real commands** — `agent product init|set|decide` is the harness CLI, not a
+  prompt convention. State lives in `state/` as per-concern shards and the command
+  routes each key to the shard that owns it (#106). `quality-gates.sh` and
+  `route-failure.sh` are still scripts in `scripts/` and are being ported next.
 
 See `docs/00-pipeline-research-and-redesign.md` for the rationale and
 remaining backlog.
