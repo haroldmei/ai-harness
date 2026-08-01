@@ -14,7 +14,7 @@ gates, and proposes the result — unattended, resumable, and bounded in dollars
 * **The runbook**: [`docs/runbooks/migration.md`](docs/runbooks/migration.md) — what must be true
   before each cutover, how to verify it, and how to get back.
 
-## Status — Phases 0–5 are implemented
+## Status — Phases 0–6 are implemented
 
 **Phase 0** changes no behaviour anywhere: the kernel, the typed contracts, the
 structured-output layer, gate discovery, and a read-only CLI that runs the repository's *own*
@@ -24,6 +24,19 @@ gates. The rollback is "delete the package".
 keeps reading labels; it additionally calls `agent record` at each stage boundary, so runs,
 checkpoints, counters and cost become queryable *before any behaviour moves*. The rollback is
 "stop calling the helper".
+
+**Phase 6** is the periphery, plus the piece that was missing underneath all of it. The
+deployment stage (optional inside `VALIDATE`, denied beyond `dev` by policy *and* approval),
+seed data as one implementation serving both the gate and the dev deploy, the canary flow, the
+scout as a separate service that files issues and — enforced by an import contract — cannot start
+a run, loop-until-dry, the optional pgvector adapter, and a real Tree-sitter symbol index that
+answers "who calls X" from the call graph rather than from a text match.
+
+Underneath: a **composition root**. Every module here has taken its collaborators as arguments
+since Phase 0, which is what made them testable and also what left the graph unassembled — so
+`agent work` and `agent tick` did not exist even though `Worker` and `Ticker` were finished.
+They exist now, and they refuse to start against a repository whose `profile.engine` is still
+`shell`.
 
 **Phase 5** is the scale-out seam, and the first phase whose claims are proven against a real
 Postgres rather than SQLite alone: leases move from `flock` to an expiry column any host can
@@ -62,11 +75,18 @@ uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev]"
 .venv/bin/agent config show .           # the effective configuration, resolved
 .venv/bin/agent config shell-env .      # the same bounds, for the existing shell stages
 
+.venv/bin/agent work --path .           # claim ready work, advance one boundary, exit
+.venv/bin/agent tick --repo owner/name  # reconcile, admit, dispatch, sweep — one pass
+
 .venv/bin/agent record --repo o/n --issue 7 --stage reviewer   # called BY the shell stages
 .venv/bin/agent ls                      # every run and its (state, status)
 .venv/bin/agent inspect <run>           # why is this stuck: the checkpoint timeline
 .venv/bin/agent cost --days 7           # what has this cost, per run/repo/template
 ```
+
+`agent work` and `agent tick` refuse to start unless `profile.engine` is `python`. That flag is
+the rollback for every phase from 2 onward, and it is worth nothing if an entry point can route
+around it — so the check lives in the composition root, not in the command.
 
 `agent config shell-env` is the Phase 0 beachhead: the shell stages and the Python engine read
 one schema, so a mixed rollout cannot disagree about `PR_MAX_ROUNDS` or `QG_GATE_TIMEOUT`.
@@ -92,6 +112,9 @@ one schema, so a mixed rollout cannot disagree about `PR_MAX_ROUNDS` or `QG_GATE
 | `subgraphs/` | `REVIEW`, `ANALYSE` and `IMPLEMENT` — isolated, bounded, idempotent |
 | `tools/` + `policies/` | Capability resolution before every action, path containment, an audit record per call, and approvals that park rather than block |
 | `workers/` | `agent tick` — reconcile, admit, dispatch, sweep — single-pass and safe at a 2-minute cadence, with the scheduler outside the agent; plus the claim-advance-exit worker and local subprocess fan-out |
+| `deploy/` | Environments namespaced by run with offset port bands and name-scoped volume reaping, smoke against the *deployed* URL, seed data (seed ≠ verify ≠ idempotent), and the canary flow behind a policy override **and** an approval |
+| `scout/` | The issue producer as a separate service: evidence re-verified locally, a different model refuting each candidate, dedup against open **and closed** issues, a per-run cap, and an import contract that stops it starting a run |
+| `wiring.py` | The composition root — the only file that constructs what it did not receive, and the one that refuses at startup rather than mid-run |
 
 ### Invariants under test
 
@@ -140,7 +163,21 @@ harness's own history (Appendix B of the design):
   because a queue that blocks behind one slow worker is the failure it exists to prevent;
 * no prompt text is exported to a tracing collector — `template_id`, sha256 and a byte count;
 * an unreachable collector degrades to the local JSON sink: losing a span is survivable, losing
-  a run is not.
+  a run is not;
+* deploying beyond `dev` is denied by policy, and a policy override still requires an approval —
+  two deliberate human acts, never one;
+* volume reaping is name-scoped, and an unrelated volume is asserted to survive it;
+* ports are offset per slot, never probed — two runs probing a shared base pick the same port;
+* the e2e database has tmpfs and no named volume (three incidents of a stale revision surviving);
+* seeding, verifying and idempotency are three separate results with three separate failures, and
+  a DSN that is not unambiguously this run's own database is refused before any command runs;
+* the canary is smoked at its *own* URL, and a rollback restores the recorded revision and still
+  fails loudly;
+* the scout re-verifies every `file:line` against the working tree, and cannot start a run;
+* "who calls X" is answered from the call graph — a text match that is not a call is excluded;
+* a stale vector entry is down-weighted and never cited with a line number;
+* a repository that is not cut over cannot be driven, and a missing credential is refused at
+  startup rather than after a claim has spent a lease.
 
 ## Development
 

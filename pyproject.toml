@@ -16,6 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]
+treesitter = [
+    "tree-sitter>=0.23",
+    "tree-sitter-language-pack>=0.7",
+]
 otel = [
     "opentelemetry-sdk>=1.25",
     "opentelemetry-exporter-otlp-proto-http>=1.25",
@@ -69,7 +73,7 @@ disallow_untyped_defs = false
 
 # The OTel SDK is an optional extra; its absence is a supported state (see tracing.py).
 [[tool.mypy.overrides]]
-module = ["opentelemetry.*"]
+module = ["opentelemetry.*", "tree_sitter_language_pack.*"]
 ignore_missing_imports = true
 
 # ── tests ─────────────────────────────────────────────────────────────────────

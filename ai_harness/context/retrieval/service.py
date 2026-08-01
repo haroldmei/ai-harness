@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from ai_harness.context.retrieval.protocol import (
     Chunk,
@@ -19,11 +20,42 @@ from ai_harness.context.retrieval.protocol import (
     RetrievalQuery,
 )
 from ai_harness.context.retrieval.ripgrep import RipgrepSearch
-from ai_harness.context.retrieval.symbols import SymbolIndex
+from ai_harness.context.retrieval.symbols import Definition, SymbolIndex
 from ai_harness.context.trust import Provenance, Untrusted
 from ai_harness.kernel.outcome import Outcome
 
 CHARS_PER_TOKEN = 4
+
+
+class Index(Protocol):
+    """What retrieval asks of a symbol index — satisfied by both backends.
+
+    Deliberately narrow. ``references_of`` is not here: the pattern index cannot answer it and
+    says so, and a protocol that demanded it would push every caller into asking a question one
+    backend can only answer with text matches.
+    """
+
+    approximate: bool
+
+    def definitions_of(self, name: str) -> list[Definition]: ...
+
+    def is_stale(self) -> bool: ...
+
+
+def build_index(root: Path, commit_sha: str) -> Index:
+    """The best index this host can build.
+
+    Tree-sitter when its grammars are installed, with the pattern index kept as the fallback for
+    languages no grammar covers; the pattern index alone otherwise. Either way the caller gets
+    ``approximate`` and can say so in a review — which is the property that made shipping the
+    approximate one acceptable in the first place.
+    """
+    from ai_harness.context.retrieval.treesitter import TreeSitterIndex, available
+
+    pattern = SymbolIndex(root=root, commit_sha=commit_sha)
+    if not available():
+        return pattern.build()
+    return TreeSitterIndex(root=root, commit_sha=commit_sha, fallback=pattern).build()
 
 
 @dataclass
@@ -31,7 +63,7 @@ class RepoRetrieval:
     """ripgrep + a symbol index, over one worktree at one commit."""
 
     root: Path
-    index: SymbolIndex | None = None
+    index: Index | None = None
     search: RipgrepSearch | None = None
     sources: list[str] = field(default_factory=lambda: ["ripgrep", "symbols"])
 

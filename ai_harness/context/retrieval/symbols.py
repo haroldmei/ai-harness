@@ -44,6 +44,17 @@ DEFINITION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 @dataclass(frozen=True, slots=True)
+class Reference:
+    """A *call* site. Not a text match — see :meth:`SymbolIndex.references_of`."""
+
+    name: str
+    path: str
+    line: int
+    caller: str = ""
+    """The enclosing definition, when one is known. "Who calls X" wants this, not just where."""
+
+
+@dataclass(frozen=True, slots=True)
 class Definition:
     name: str
     path: str
@@ -102,6 +113,17 @@ class SymbolIndex:
         if self._built_for != self.commit_sha:
             return []
         return list(self._definitions.get(name, []))
+
+    def references_of(self, name: str) -> list[Reference]:
+        """Always empty here, and that is the honest answer.
+
+        A pattern index can find where the *string* ``name`` appears — in an import, a
+        docstring, a comment, a variable named after it — and none of those is a call. Returning
+        those as references would put text matches in front of a reviewer under a heading that
+        says "who calls this", which is worse than saying nothing. The Tree-sitter backend
+        answers this from the call graph; this one declines.
+        """
+        return []
 
     def is_stale(self) -> bool:
         return self._built_for != self.commit_sha

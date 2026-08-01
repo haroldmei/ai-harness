@@ -22,6 +22,7 @@ from typing import Annotated
 
 import typer
 
+from ai_harness.cli.commands.drive import drive_app
 from ai_harness.cli.commands.state import record, state_app
 from ai_harness.config import ConfigError, HarnessConfig, load_config, load_policy
 from ai_harness.quality.adapters.shell import ShellGateAdapter
@@ -44,6 +45,10 @@ app.add_typer(config_app, name="config")
 # Phase 1: durable state is written (by the shell, via `record`) and readable, but nothing
 # reads it to make a decision yet — that is Phase 4.
 app.command("record")(record)
+# Phase 6: the composition root exists, so the commands that DRIVE runs can too. Both refuse
+# to start against a repository whose profile.engine is still `shell` — that flag is the
+# rollback for Phases 2-5, and it is worth nothing if an entry point can route around it.
+app.registered_commands.extend(drive_app.registered_commands)
 for _name in ("ls", "inspect", "cost", "replay"):
     app.registered_commands.extend([c for c in state_app.registered_commands if c.name == _name])
 

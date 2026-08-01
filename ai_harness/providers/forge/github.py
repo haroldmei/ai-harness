@@ -101,6 +101,17 @@ class GitHubForge:
     async def get_issue(self, number: int) -> Outcome[Issue]:
         return (await self._call("GET", f"/repos/{self.repo}/issues/{number}")).map(_to_issue)
 
+    async def create_issue(
+        self, *, title: str, body: str, labels: list[str] | None = None
+    ) -> Outcome[Issue]:
+        return (
+            await self._call(
+                "POST",
+                f"/repos/{self.repo}/issues",
+                json={"title": title, "body": body, "labels": labels or []},
+            )
+        ).map(_to_issue)
+
     async def add_labels(self, number: int, labels: list[str]) -> Outcome[None]:
         outcome = await self._call(
             "POST", f"/repos/{self.repo}/issues/{number}/labels", json={"labels": labels}

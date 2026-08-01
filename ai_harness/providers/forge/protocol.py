@@ -88,6 +88,17 @@ class Forge(Protocol):
 
     async def close_issue(self, number: int, *, reason: str = "") -> Outcome[None]: ...
 
+    async def create_issue(
+        self, *, title: str, body: str, labels: list[str] | None = None
+    ) -> Outcome[Issue]:
+        """File an issue.
+
+        The harness itself never calls this — it *consumes* issues. The scout produces them
+        (Q12: a separate service sharing this layer), and giving it the same protocol rather
+        than its own client is what stops a second, drifting GitHub adapter appearing.
+        """
+        ...
+
     # ── merge requests ───────────────────────────────────────────────────────────
     async def find_mr_by_head(self, head_ref: str) -> Outcome[MergeRequest | None]:
         """The idempotency query. Ask before creating, always."""

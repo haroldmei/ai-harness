@@ -145,6 +145,25 @@ class FakeForge:
             return Outcome.fail(ErrorCategory.PERMANENT, f"no issue {number}")
         return Outcome.ok(issue)
 
+    async def create_issue(
+        self, *, title: str, body: str, labels: list[str] | None = None
+    ) -> Outcome[Issue]:
+        blocked = self._guard_write()
+        if blocked is not None:
+            return Outcome.of(blocked.error)  # type: ignore[arg-type]
+        limited = self._tick()
+        if limited is not None:
+            return Outcome.of(limited.error)  # type: ignore[arg-type]
+        number = max(self.issues, default=0) + 1
+        issue = Issue(
+            number=number, title=title, body=body, labels=list(labels or []), state="open"
+        )
+        self.issues[number] = issue
+        # The search index lags behind writes here as it does everywhere else in this fake:
+        # a scout that trusted an immediate read-back would believe it had filed nothing.
+        self._index.append(dict(self.issues))
+        return Outcome.ok(issue)
+
     async def add_labels(self, number: int, labels: list[str]) -> Outcome[None]:
         blocked = self._guard_write()
         if blocked is not None:

@@ -29,8 +29,14 @@ type = layers
 ;
 ; Both directions are one-way and stay checked. A peer declaration would have made these
 ; imports legal in either direction, which is strictly less safety than this.
+; Phase 6 splits cli and workers, which §22.1 lists as peers. The dependency is real and
+; one-way: `agent work` and `agent tick` START a worker, and nothing in workers/ knows a CLI
+; exists. `ai_harness.wiring` is deliberately outside every layer — a composition root imports
+; everything by definition, and constraining it would only push the wiring somewhere that is
+; constrained, i.e. somewhere worse.
 layers =
-    ai_harness.cli | ai_harness.workers
+    ai_harness.cli
+    ai_harness.workers | ai_harness.scout
     ai_harness.orchestration
     ai_harness.subgraphs
     ai_harness.agents
@@ -90,3 +96,19 @@ source_modules =
     ai_harness.cli
 forbidden_modules =
     ai_harness.llm.structured
+
+[importlinter:contract:scout-cannot-start-a-run]
+name = The scout files issues and cannot start a run
+; Q12: the scout is a SEPARATE SERVICE that shares kernel/, llm/ and providers/ and has its own
+; lifecycle. The economics that make it worth running depend on its output being cheap to
+; reject — a human reads a `proposed` issue and relabels it, or closes it. If the scout could
+; reach the machine, a low-confidence finding would become an unattended code change and that
+; property would be gone. So it is a contract, not a comment.
+type = forbidden
+source_modules =
+    ai_harness.scout
+forbidden_modules =
+    ai_harness.orchestration
+    ai_harness.subgraphs
+    ai_harness.workers
+    ai_harness.persistence

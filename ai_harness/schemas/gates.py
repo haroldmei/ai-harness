@@ -211,3 +211,43 @@ class GateIntegrityCheck(BaseModel):
         if self.ci_modified:
             out.append("CI configuration modified")
         return out
+
+
+class AdversarialFinding(BaseModel):
+    """One thing an adversarial pass found. Advisory: it informs, it does not fail a build."""
+
+    title: str
+    location: str = ""
+    """``path:line`` where the finding lives, when it has one."""
+    severity: str = "p2"
+    repro_test: str = ""
+    """The path to a failing test that demonstrates it.
+
+    `adversarial-loop.sh` requires this for a finding to count, and so does the scout's bug
+    engine: a bug nobody can reproduce is a claim, and a claim costs more to triage than it
+    saves. Empty here means the finding is reported but carries no evidence anyone can run.
+    """
+    body: str = ""
+    fingerprint: str = ""
+
+    @property
+    def reproducible(self) -> bool:
+        return bool(self.repro_test)
+
+
+class AdversarialReport(BaseModel):
+    """What the loop-until-dry stage concluded."""
+
+    rounds: int = 0
+    findings: list[AdversarialFinding] = Field(default_factory=list)
+    dry_streak: int = 0
+    exhausted: bool = False
+    """True when the round cap stopped it rather than the attacker running dry.
+
+    Reported rather than hidden: "we stopped looking" and "there was nothing left to find" are
+    very different states to hand to a reviewer, and a bare finding count conflates them.
+    """
+
+    @property
+    def reproducible(self) -> list[AdversarialFinding]:
+        return [finding for finding in self.findings if finding.reproducible]

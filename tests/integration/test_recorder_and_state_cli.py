@@ -252,7 +252,9 @@ def test_only_the_layers_that_should_touch_durable_state_do(tmp_path: Path) -> N
     # claim, and the queue is a query over the runs table (§25). What must NOT appear here is
     # agents, subgraphs, quality or context — those receive what they need through their
     # context object, so a state cannot quietly fetch or mutate the run it is executing.
-    allowed = {"persistence", "cli", "orchestration", "policies", "workers"}
+    # Phase 6 adds wiring.py, the composition root: assembling the graph means constructing the
+    # store, and putting that anywhere else would only move the import somewhere constrained.
+    allowed = {"persistence", "cli", "orchestration", "policies", "workers", "wiring.py"}
     for reader in readers:
         relative = Path(reader).relative_to(root / "ai_harness")
         assert relative.parts[0] in allowed, f"{relative} reads durable state before Phase 4"

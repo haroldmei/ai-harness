@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_harness.agents.triager import TriageInput, Triager
+from ai_harness.deploy.subgraph import DeployContext
 from ai_harness.kernel.ids import idempotency_key
 from ai_harness.kernel.outcome import ErrorCategory, Outcome
 from ai_harness.quality import integrity
@@ -56,6 +57,10 @@ class ValidateContext:
     """True when this run *is* the base: it RECORDS a baseline rather than consulting one."""
     cached_report: GateReport | None = None
     confirm_flakes: bool = True
+    deploy: DeployContext | None = None
+    """§20.2's optional stage. Absent ⇒ no deployment, and no run is blocked by that."""
+    adversarial: bool = False
+    """Loop-until-dry, opt-in per repository. Advisory: it reports, it never fails the run."""
 
 
 @dataclass
@@ -65,6 +70,10 @@ class ValidateSubgraph:
     runner: Any
     """Anything with ``run(...)`` and ``rerun(...)`` — the shell adapter or the Python runner."""
     triager: Triager = field(default_factory=Triager)
+    deployer: Any = None
+    """An optional :class:`~ai_harness.deploy.subgraph.DeployStage`. Absent ⇒ never deployed."""
+    adversary: Any = None
+    """An optional :class:`~ai_harness.quality.adversarial.AdversarialLoop`."""
     state_name: str = "VALIDATE"
 
     async def execute(self, ctx: ValidateContext) -> Outcome[SubgraphResult]:
@@ -122,13 +131,13 @@ class ValidateSubgraph:
 
         report = self._forgive_inherited(report, ctx)
         if report.green:
-            return Outcome.ok(self._green(report, ctx, key))
+            return await self._green_path(report, ctx, key)
 
         # 3. Flake confirmation: only the gates that failed, and the answer is recorded.
         if ctx.confirm_flakes:
             report = await self._confirm(report, ctx)
             if report.green:
-                return Outcome.ok(self._green(report, ctx, key, flaky=True))
+                return await self._green_path(report, ctx, key, flaky=True)
 
         # 4. Attribution.
         return await self._attribute(report, ctx, key)
@@ -175,22 +184,114 @@ class ValidateSubgraph:
                 merged.append(result)
         return report.model_copy(update={"results": merged})
 
-    def _green(
+    async def _green_path(
         self, report: GateReport, ctx: ValidateContext, key: str, *, flaky: bool = False
+    ) -> Outcome[SubgraphResult]:
+        """Green — then, optionally, deploy.
+
+        Both green paths come through here, including the one a confirmed flake produced. A
+        deployment that only happened when the suite was green *first time* would make the
+        stage's coverage depend on flakiness, which is the opposite of what either mechanism is
+        for.
+        """
+        deployed = await self._deploy(ctx)
+        if deployed is not None and deployed.is_err:
+            return self._deploy_failed(ctx, deployed, key)
+        deployment = deployed.unwrap() if deployed is not None else None
+        adversarial = await self._adversarial(ctx)
+        return Outcome.ok(
+            self._green(
+                report,
+                ctx,
+                key,
+                flaky=flaky,
+                deployment=deployment,
+                adversarial=adversarial,
+            )
+        )
+
+    async def _adversarial(self, ctx: ValidateContext) -> Any:
+        """Loop-until-dry, and *advisory* — it never turns a green suite red on its own.
+
+        A stage that could fail a build on an adversarial opinion would make every model
+        tantrum a red build. What it produces is evidence, carried into REVIEW, where a human
+        or the reviewer decides what it is worth.
+        """
+        if self.adversary is None or not ctx.adversarial:
+            return None
+        return await self.adversary.run()
+
+    async def _deploy(self, ctx: ValidateContext) -> Outcome[Any] | None:
+        """The stage runs only when both a deployer and a context are present.
+
+        Two conditions rather than one because they mean different things: no deployer is a
+        harness that was not configured to deploy, and no context is a repository that opted
+        out. Neither is a failure, and neither should look like one in the payload.
+        """
+        if self.deployer is None or ctx.deploy is None:
+            return None
+        outcome: Outcome[Any] = await self.deployer.execute(ctx.deploy)
+        return outcome
+
+    def _deploy_failed(
+        self, ctx: ValidateContext, outcome: Outcome[Any], key: str
+    ) -> Outcome[SubgraphResult]:
+        """A red deployment does not become a red *branch* without attribution.
+
+        An environment failure defers — the same treatment as a gate suite that could not run,
+        and for the same reason: docker being down is not this branch's doing. Anything else is
+        a smoke check the code failed, which is the branch's own to fix.
+        """
+        error = outcome.error
+        if error is not None and error.category is ErrorCategory.ENVIRONMENT:
+            return self._environmental(ctx, error)
+        return Outcome.ok(
+            SubgraphResult(
+                signal=Signal.FIX,
+                reason=error.message if error is not None else "the deployment failed",
+                payload={
+                    "idempotency_key": key,
+                    "fault": Fault.SELF.value,
+                    "deployment": (error.details if error is not None else {}),
+                },
+                head_sha=ctx.head_sha,
+                base_sha=ctx.base_sha,
+            )
+        )
+
+    def _green(
+        self,
+        report: GateReport,
+        ctx: ValidateContext,
+        key: str,
+        *,
+        flaky: bool = False,
+        deployment: Any = None,
+        adversarial: Any = None,
     ) -> SubgraphResult:
         flakes = [r.name for r in report.results if r.flake_confirmed]
+        payload: dict[str, Any] = {
+            "idempotency_key": key,
+            "report": report.model_dump(mode="json"),
+            "flakes": flakes,
+            "inherited": [r.name for r in report.results if r.inherited],
+        }
+        if deployment is not None:
+            payload["deployment"] = deployment.model_dump(mode="json")
+        if adversarial is not None:
+            payload["adversarial"] = adversarial.model_dump(mode="json")
         return SubgraphResult(
             signal=Signal.ADVANCE,
             reason=(
                 "required gates green"
                 + (f" (flake confirmed on {', '.join(flakes)})" if flaky and flakes else "")
+                + (
+                    f" · deployed to {deployment.url}"
+                    if deployment is not None and deployment.url
+                    else ""
+                )
             ),
-            payload={
-                "idempotency_key": key,
-                "report": report.model_dump(mode="json"),
-                "flakes": flakes,
-                "inherited": [r.name for r in report.results if r.inherited],
-            },
+            payload=payload,
             head_sha=ctx.head_sha,
             base_sha=ctx.base_sha,
         )

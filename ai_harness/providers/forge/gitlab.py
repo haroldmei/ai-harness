@@ -107,6 +107,21 @@ class GitLabForge:
     async def get_issue(self, number: int) -> Outcome[Issue]:
         return (await self._call("GET", f"/issues/{number}")).map(_to_issue)
 
+    async def create_issue(
+        self, *, title: str, body: str, labels: list[str] | None = None
+    ) -> Outcome[Issue]:
+        return (
+            await self._call(
+                "POST",
+                "/issues",
+                json={
+                    "title": title,
+                    "description": body,
+                    "labels": ",".join(labels or []),
+                },
+            )
+        ).map(_to_issue)
+
     async def add_labels(self, number: int, labels: list[str]) -> Outcome[None]:
         existing = await self.get_issue(number)
         if existing.is_err:
