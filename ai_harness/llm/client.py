@@ -25,6 +25,7 @@ from ai_harness.kernel.clock import Clock, SystemClock
 from ai_harness.kernel.ids import digest
 from ai_harness.kernel.outcome import ErrorCategory, Outcome
 from ai_harness.kernel.retry import BreakerRegistry, call_with_retry
+from ai_harness.kernel.tokens import CalibratedCounter
 from ai_harness.llm.engines.protocol import Completion, Engine, LLMRequest
 from ai_harness.llm.engines.routing import FALLBACK_WORTHY
 from ai_harness.llm.pricing import price, rate_for
@@ -54,6 +55,9 @@ class LLMClient:
     sink: SpanSink = field(default_factory=NullSink)
     fallback_limit: int = 3
     """How many hosted fallbacks one run may take before the local failure escalates (L7)."""
+    counter: CalibratedCounter | None = None
+    """Calibrated from every completion's reported prompt tokens. No call is made to learn the
+    model's characters-per-token ratio; the calls the harness already makes report it."""
 
     async def complete(
         self,
@@ -98,6 +102,11 @@ class LLMClient:
         completion: Completion | None = None
         if outcome.is_ok:
             completion = outcome.unwrap()
+            if self.counter is not None:
+                self.counter.calibrate(
+                    characters=len(request.system) + len(request.prompt),
+                    tokens=completion.usage.input_tokens,
+                )
             usd = price(
                 completion.usage,
                 provider=completion.provider,
@@ -205,9 +214,7 @@ class LLMClient:
                 template_id=request.template_id,
                 prompt_sha256=digest(prompt_material),
                 prompt_bytes=len(prompt_material.encode("utf-8", "replace")),
-                attributes=(
-                    {f"fallback.{k}": str(v) for k, v in fallback.items()} if fallback else {}
-                ),
+                attributes=_attributes(completion, fallback),
             )
             self.sink.emit(span)
         except Exception:  # telemetry never fails the caller — the shell's contract, kept
@@ -220,3 +227,20 @@ def _fallback_of(outcome: Outcome[Completion]) -> dict[str, str] | None:
         return None
     marker = outcome.unwrap().raw.get("fallback")
     return {str(k): str(v) for k, v in marker.items()} if isinstance(marker, dict) else None
+
+
+def _attributes(completion: Completion | None, fallback: dict[str, str] | None) -> dict[str, str]:
+    """Span attributes that are cheap to compute and expensive to reconstruct later.
+
+    The prefix-cache hit ratio is the local analogue of provider prompt caching. There is no
+    vendor bill to save, so the saving is wall-clock — and on a serial GPU wall-clock is the
+    binding constraint. Recording it is what makes the tier ordering of §17.3 falsifiable rather
+    than merely plausible.
+    """
+    attributes: dict[str, str] = {}
+    if fallback:
+        attributes.update({f"fallback.{key}": str(value) for key, value in fallback.items()})
+    if completion is not None and completion.usage.input_tokens > 0:
+        ratio = completion.usage.cache_read_tokens / completion.usage.input_tokens
+        attributes["cache.hit_ratio"] = f"{ratio:.3f}"
+    return attributes

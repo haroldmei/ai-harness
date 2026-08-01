@@ -26,11 +26,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ai_harness.context.trust import Trusted, TrustedPrompt, Untrusted
+from ai_harness.kernel.tokens import CalibratedCounter, TokenCounter
 
 CHARS_PER_TOKEN = 4
 
 
 def estimate_tokens(text: str) -> int:
+    """The original heuristic, kept for callers with no model in hand.
+
+    Everything that *budgets* now goes through a :class:`~ai_harness.context.tokens.TokenCounter`
+    instead: against a 32k window this under-counts code by roughly 20%, and under-counting is
+    the direction that costs a call rather than some context (L6).
+    """
     return max(len(text) // CHARS_PER_TOKEN, 1)
 
 
@@ -54,6 +61,19 @@ class ContextBudget:
     def usable(self) -> int:
         return max(self.max_tokens - self.reserve_for_output, 1_000)
 
+    @classmethod
+    def for_model(cls, *, window: int, max_output_tokens: int = 8_000) -> ContextBudget:
+        """The budget one served model actually has.
+
+        The default 120 000 was a hosted model's window written down once. Locally the window is
+        a property of the weights, the KV cache and the flags the unit was started with, so it is
+        passed in from the registry or the probe rather than assumed — and the output reservation
+        is subtracted from *that*, because a window is shared between the prompt and the answer.
+        """
+        return cls(
+            max_tokens=window, reserve_for_output=min(max_output_tokens, max(window // 4, 1))
+        )
+
 
 @dataclass
 class AssembledContext:
@@ -65,6 +85,10 @@ class AssembledContext:
     dropped_summaries: int = 0
     dropped_retrieved: int = 0
     untrusted_sources: list[str] = field(default_factory=list)
+    exact_tokens: bool = False
+    """Whether :attr:`tokens` came from the model's tokenizer or from an estimate."""
+    reassembled: bool = False
+    """True when this is the second, smaller assembly after the first did not fit (L6)."""
 
     @property
     def complete(self) -> bool:
@@ -76,6 +100,9 @@ class ContextAssembler:
     """Builds a prompt from tiers, spending a budget from the least important tier upward."""
 
     budget: ContextBudget = field(default_factory=ContextBudget)
+    counter: TokenCounter = field(default_factory=CalibratedCounter)
+    """How tokens are counted while spending the budget. The default learns; a server counter
+    is exact. Either way the *unit* is tokens rather than characters over four."""
 
     def assemble(
         self,
@@ -99,17 +126,18 @@ class ContextAssembler:
                 )
             )
 
-        spent = estimate_tokens(system.text) + sum(estimate_tokens(f.render()) for f in pinned)
-        untrusted_cost = sum(estimate_tokens(u.text) for u in (untrusted or []))
+        count = self.counter.count
+        spent = count(system.text) + sum(count(f.render()) for f in pinned)
+        untrusted_cost = sum(count(u.text) for u in (untrusted or []))
         available = self.budget.usable - spent - untrusted_cost
 
         for section in active or []:
             prompt.add_trusted(section)
-            available -= estimate_tokens(section.text)
+            available -= count(section.text)
 
         dropped_summaries = 0
         for section in summarised or []:
-            cost = estimate_tokens(section.text)
+            cost = count(section.text)
             if cost <= available:
                 prompt.add_trusted(section)
                 available -= cost
@@ -118,7 +146,7 @@ class ContextAssembler:
 
         dropped_retrieved = 0
         for section in retrieved or []:
-            cost = estimate_tokens(section.text)
+            cost = count(section.text)
             if cost <= available:
                 prompt.add_trusted(section)
                 available -= cost
@@ -140,9 +168,46 @@ class ContextAssembler:
         rendered = prompt.render()
         return AssembledContext(
             prompt=rendered,
-            tokens=estimate_tokens(rendered),
+            tokens=count(rendered),
+            exact_tokens=self.counter.exact,
             pinned=list(pinned),
             dropped_summaries=dropped_summaries,
             dropped_retrieved=dropped_retrieved,
             untrusted_sources=prompt.sources,
         )
+
+
+SHRINK = 0.85
+"""How much smaller the second attempt is. Deliberately a step rather than a search: a binary
+search over assemblies would be several assemblies, and the tiers below the pinned facts are
+*supposed* to be the compressible part."""
+
+
+def fit(
+    assembler: ContextAssembler,
+    *,
+    window: int,
+    max_output_tokens: int = 8_000,
+    **sections: object,
+) -> AssembledContext:
+    """Assemble within a real window, re-assembling **once** if the first attempt does not fit.
+
+    This is the caller-side half of L6. The engine refuses an oversized prompt before the wire;
+    something has to make a smaller one, and only this layer knows what may be dropped — pinned
+    facts stay, summaries and retrieval go, and what was withheld is stated in the prompt.
+
+    One retry, not a loop: if a budget 15% smaller still does not fit, the problem is not the
+    budget. It is a diff or an issue body that is too large for this model, and pretending
+    otherwise by shrinking six more times just spends wall-clock before the same escalation.
+    """
+    assembler.budget = ContextBudget.for_model(window=window, max_output_tokens=max_output_tokens)
+    first = assembler.assemble(**sections)  # type: ignore[arg-type]
+    if first.tokens <= assembler.budget.usable:
+        return first
+
+    assembler.budget = ContextBudget(
+        max_tokens=int(window * SHRINK), reserve_for_output=assembler.budget.reserve_for_output
+    )
+    second = assembler.assemble(**sections)  # type: ignore[arg-type]
+    second.reassembled = True
+    return second

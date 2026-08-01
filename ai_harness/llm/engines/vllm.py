@@ -35,6 +35,7 @@ from typing import Any
 import httpx
 
 from ai_harness.kernel.outcome import ErrorCategory, Outcome
+from ai_harness.kernel.tokens import TokenCounter
 from ai_harness.llm.engines.protocol import (
     Completion,
     EngineCapabilities,
@@ -80,6 +81,9 @@ class VLLMEngine:
     name: str = "local"
     max_model_len: int | None = None
     """The server's declared window, when known. Used to reject before the wire, not after."""
+    counter: TokenCounter | None = None
+    """How the prompt is measured for the pre-flight. Absent means no pre-flight, and then the
+    server's 400 is the first anyone hears of it — correct, but a round trip later."""
     capabilities: EngineCapabilities = field(
         default_factory=lambda: EngineCapabilities(
             native_structured_output=False,
@@ -90,6 +94,10 @@ class VLLMEngine:
     )
 
     async def complete(self, request: LLMRequest) -> Outcome[Completion]:
+        preflight = self._preflight(request)
+        if preflight is not None:
+            return preflight
+
         messages: list[dict[str, str]] = []
         if request.system:
             messages.append({"role": "system", "content": request.system})
@@ -142,6 +150,34 @@ class VLLMEngine:
                 await client.aclose()
 
         return self._map(response, request)
+
+    def _preflight(self, request: LLMRequest) -> Outcome[Completion] | None:
+        """Refuse an oversized prompt *here*, where no round trip has been spent yet.
+
+        The window is shared between the prompt and the answer, so ``max_tokens`` is part of the
+        arithmetic: a prompt that fits and then leaves no room to reply has not fitted.
+        """
+        if self.max_model_len is None or self.counter is None:
+            return None
+        prompt_tokens = self.counter.count(request.system) + self.counter.count(request.prompt)
+        if prompt_tokens + request.max_tokens <= self.max_model_len:
+            return None
+        return Outcome.fail(
+            ErrorCategory.CONTEXT_OVERFLOW,
+            f"the prompt would not fit {request.model or self.name}'s window",
+            remedy=(
+                "assemble less and try once; the assembler owns what may be dropped (L6). "
+                "This was refused before the request was sent"
+            ),
+            details={
+                "declared_window": self.max_model_len,
+                "requested_tokens": prompt_tokens + request.max_tokens,
+                "prompt_tokens": prompt_tokens,
+                "max_tokens": request.max_tokens,
+                "exact": self.counter.exact,
+                "template_id": request.template_id,
+            },
+        )
 
     def _headers(self) -> dict[str, str]:
         headers = {"content-type": "application/json"}
