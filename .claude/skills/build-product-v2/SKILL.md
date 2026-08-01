@@ -39,7 +39,7 @@ waterfall.
 5. **Scale tier gates ops phases.** A `preview` product never enters
    the Terraform / PRR / SLO branch.
 6. **Loops, not waterfall.** Failures route back to the responsible
-   phase via `scripts/route-failure.sh`. Critic verdicts can demote
+   phase via `agent route`. Critic verdicts can demote
    `LOCKED` artifacts to `DRAFT` and replan.
 7. **Hard gates beat soft gates.** Use `scripts/quality-gates.sh` —
    typecheck → lint → seed-integrity → unit → mutation ≥ 70% →
@@ -494,7 +494,7 @@ scripts/quality-gates.sh --only seed-integrity
 ```
 
 If this fails, the phase is `failed` (not `done`); route via
-`scripts/route-failure.sh --gate seed-integrity --area prisma/`. This
+`agent route --gate seed-integrity --area prisma/`. This
 catches the "phantom artifact" failure mode where a subagent narrates
 "seed shipped" but never wrote the file.
 
@@ -504,7 +504,7 @@ Scans the now-implemented routes, extracts validators and types, and
 writes `docs/07-api-reference.md` + `openapi.yaml`. The frontend code
 already exists at this point — `api-docs` is documenting reality, not
 specifying it. Subsequent `frontend-developer` reruns (e.g. from
-`route-failure.sh`) will read this if they need API shapes.
+`agent route`) will read this if they need API shapes.
 
 ### Phase 7.7 — `e2e-tester` (NEW, sequential before quality gates)
 Subagent, skill `e2e-tester`, manifest `[code, 02, 03b]`, model
@@ -514,7 +514,7 @@ quality gate has nothing to run.
 
 The skill iterates until all generated tests pass against the local
 dev server. If a test fails because a feature is broken (not the
-test), routes back via `route-failure.sh --gate e2e --area <path>` to
+test), routes back via `agent route --gate e2e --area <path>` to
 the appropriate implementer.
 
 ### Phase 8 — Quality gates + fix loop (orchestrator runs the driver)
@@ -522,12 +522,12 @@ the appropriate implementer.
 Do **not** hand-roll the gate/route/fix loop — run the codified driver:
 
 ```bash
-scripts/verify-loop.sh --agent          # test → route → fix → re-test until green
+agent verify --agent          # test → route → fix → re-test until green
 ```
 
-`verify-loop.sh` is the deterministic form of this phase: it runs
+`agent verify` is the deterministic form of this phase: it runs
 `scripts/quality-gates.sh --keep-going --json` (all gates, tier-aware), routes
-every failure through `route-failure.sh`, persists the attempt count in
+every failure through `agent route`, persists the attempt count in
 `state.testing.gate_attempts`, and — with `--agent` — spawns the owner skill via
 `claude -p` to fix the root cause, looping until all gates pass or a gate hits
 `--max-attempts` (default 3, then surfaced). It writes a machine-readable
@@ -540,7 +540,7 @@ live in `quality-gates.sh`; `launch+` requires `mutation`, `repro-tests`, and
 source paths) so `wedge-coverage` can enforce that the wedge workflow is tested.
 
 If you are driving the loop yourself instead of with `--agent` (report-only),
-`verify-loop.sh` still routes and writes the verdict; you apply each fix via the
+`agent verify` still routes and writes the verdict; you apply each fix via the
 Task tool, then re-run it.
 
 ### Phase 9 — `adversarial-tester` (loop-until-dry)
@@ -548,7 +548,7 @@ Task tool, then re-run it.
 Run the adversary in a loop, not a single pass:
 
 ```bash
-scripts/adversarial-loop.sh --agent     # repeat adversarial-tester until DRY_STOP empty rounds
+agent verify --loop --agent     # repeat adversarial-tester until DRY_STOP empty rounds
 ```
 
 `adversarial-loop.sh` repeatedly invokes the `adversarial-tester` skill (model
@@ -556,7 +556,7 @@ scripts/adversarial-loop.sh --agent     # repeat adversarial-tester until DRY_ST
 findings by issue id across rounds, until two consecutive rounds add zero new
 bugs (or `--max-rounds`). Each real bug is filed as a structured `open_issues`
 object with a committed `repro_test`; the tester never fixes (tester ≠ fixer).
-Then re-run Phase 8 (`verify-loop.sh`) — the `repro-tests` gate guarantees every
+Then re-run Phase 8 (`agent verify`) — the `repro-tests` gate guarantees every
 filed bug carries a reproducing test and the implementer's fix drains it.
 
 ### Phase 10 — `security-auditor`
@@ -797,7 +797,7 @@ Instrument the wedge workflow only. Schedule:
 | Failure | Route to |
 |---|---|
 | Critic rejects spec/wedge | last passing producer |
-| Quality gate: typecheck/lint | `route-failure.sh --gate <g> --area <path>` |
+| Quality gate: typecheck/lint | `agent route --gate <g> --area <path>` |
 | Quality gate: seed-integrity | `db-migrator` (manifest mismatch / phantom artifact) |
 | Quality gate: mutation | `adversarial-tester` |
 | Quality gate: contract | `backend-developer` |
@@ -895,7 +895,7 @@ Create `docs/iterations/000-issue-<N>-<slug>.md` as iteration 0, then run `agent
 - **Critic gates** — every strategic artifact is reviewed by a
   different-model subagent before advancing.
 - **Scale-tier branching** — `preview` is not forced through Terraform.
-- **Loops, not waterfall** — failures route back via `route-failure.sh`.
+- **Loops, not waterfall** — failures route back via `agent route`.
 - **Dogfood loop** — real browser walk of the wedge workflow before ship.
 - **Human checkpoints** — at the four high-leverage moments.
 - **Model routing** — Opus for taste, Sonnet for volume, Haiku for
@@ -903,7 +903,7 @@ Create `docs/iterations/000-issue-<N>-<slug>.md` as iteration 0, then run `agent
 - **Real commands** — `agent product init|set|decide` is the harness CLI, not a
   prompt convention. State lives in `state/` as per-concern shards and the command
   routes each key to the shard that owns it (#106). `quality-gates.sh` and
-  `route-failure.sh` are still scripts in `scripts/` and are being ported next.
+  `agent route` are still scripts in `scripts/` and are being ported next.
 
 See `docs/00-pipeline-research-and-redesign.md` for the rationale and
 remaining backlog.

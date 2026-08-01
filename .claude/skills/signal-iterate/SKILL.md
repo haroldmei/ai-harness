@@ -1,6 +1,6 @@
 ---
 name: signal-iterate
-description: Signal-Driven Iteration (WARM loop) — the post-launch sibling of `iterate`, driven by REAL user signals (PostHog funnels, Sentry errors, support inbox, top-of-funnel analytics) instead of gap analysis. Prioritizes the next iteration based on what users actually do, not what the model thinks the market wants. Shares the same verification spine as `iterate` (critic gate + verify-loop.sh + quality-gates.sh + grow-the-net + dogfood); only the front-half (signals vs. gap analysis) differs.
+description: Signal-Driven Iteration (WARM loop) — the post-launch sibling of `iterate`, driven by REAL user signals (PostHog funnels, Sentry errors, support inbox, top-of-funnel analytics) instead of gap analysis. Prioritizes the next iteration based on what users actually do, not what the model thinks the market wants. Shares the same verification spine as `iterate` (critic gate + `agent verify` + quality-gates.sh + grow-the-net + dogfood); only the front-half (signals vs. gap analysis) differs.
 argument-hint: "[optional: signal source override, e.g. 'posthog' or 'sentry-only']"
 allowed-tools: Task, WebSearch, WebFetch, Read, Write, Edit, Bash, Glob, Grep
 effort: max
@@ -254,7 +254,7 @@ Do NOT bundle other changes into this iteration. Resist scope creep
 ### 6c. Verify through the real spine (not ad-hoc)
 
 ```bash
-scripts/verify-loop.sh --agent --with-adversarial --tier "$TIER"   # test→route→fix→re-test + loop-until-dry adversary
+agent verify --agent --with-adversarial --tier "$TIER"   # test→route→fix→re-test + loop-until-dry adversary
 scripts/quality-gates.sh --tier "$TIER" --keep-going --json state/iter-gates.json
 ```
 

@@ -79,7 +79,7 @@ else
     COUNT=$(psql "$DATABASE_URL" -tAc "$QUERY" 2>/dev/null | tr -d ' ')
     if [[ -z "$COUNT" || "$COUNT" -lt "$MIN" ]]; then
       echo "BLOCKED: wedge-critical table $table has $COUNT rows (manifest min_rows=$MIN)"
-      OWNER=$(scripts/route-failure.sh --gate dogfood-empty-seed --area prisma/)
+      OWNER=$(agent route --gate dogfood-empty-seed --area prisma/)
       # Write a stub iteration report so the orchestrator sees the bounce.
       mkdir -p docs/dogfood
       cat > docs/dogfood/iteration-N.md <<EOF
@@ -111,7 +111,7 @@ EOF
 fi
 ```
 
-**Hard rule:** if the manifest declares `wedge_critical_tables` and any are below `min_rows` at runtime, dogfood **MUST** route via `route-failure.sh --gate dogfood-empty-seed --area prisma/` and exit. It must NOT score the workflow at all. Past iterations have rationalized empty seed as "documented empty-state" and shipped 6.4 verdicts that polished frontend instead of fixing the root cause — do not repeat that.
+**Hard rule:** if the manifest declares `wedge_critical_tables` and any are below `min_rows` at runtime, dogfood **MUST** route via `agent route --gate dogfood-empty-seed --area prisma/` and exit. It must NOT score the workflow at all. Past iterations have rationalized empty seed as "documented empty-state" and shipped 6.4 verdicts that polished frontend instead of fixing the root cause — do not repeat that.
 
 If no manifest exists, you cannot distinguish "user-driven empty state" from "seed never ran." In that case, an empty screen on a wedge-critical step is a bug routed via the normal verdict (LOOP at minimum), not a 10/10 for "shows empty state correctly."
 

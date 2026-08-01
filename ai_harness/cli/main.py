@@ -270,6 +270,74 @@ def gates_compare(
     raise typer.Exit(EXIT_RED if comparison.unexplained else EXIT_OK)
 
 
+@app.command("verify")
+def verify(
+    path: Annotated[Path, typer.Argument(help="Repository root")] = Path(),
+    tier: Annotated[str | None, typer.Option(help="Gate tier")] = None,
+    max_attempts: Annotated[int, typer.Option(help="Per-gate attempt budget")] = 3,
+    max_rounds: Annotated[int, typer.Option(help="Rounds when fixes are applied between")] = 1,
+    report_only: Annotated[
+        bool, typer.Option("--report-only/--loop", help="Route without looping")
+    ] = True,
+) -> None:
+    """Run the gates, route each failure to its owner, and write `state/verdict.json`.
+
+    Report-only by default: the orchestrator applies the fixes, and a loop that iterated without
+    a fixer would run identical gates against an identical tree and call that progress.
+    """
+    from ai_harness.product.state import ProductState
+    from ai_harness.quality.verify import VerifyLoop
+
+    resolved_tier = _tier(tier)
+    found = discover(path, tier=resolved_tier)
+    if found.escalates:
+        typer.secho("no gates were discovered — a run here would merge ungated", fg="red", err=True)
+        raise typer.Exit(EXIT_NO_GATES)
+
+    runner: ShellGateAdapter | GateRunner = (
+        ShellGateAdapter(root=path, profile=found.profile)
+        if found.profile.entry_point is not None
+        else GateRunner(root=path, profile=found.profile)
+    )
+    loop = VerifyLoop(
+        runner=runner,
+        state=ProductState(directory=path / "state"),
+        max_attempts=max_attempts,
+    )
+    outcome = asyncio.run(
+        loop.run(
+            tier=resolved_tier.value,
+            report_only=report_only,
+            max_rounds=max_rounds,
+        )
+    )
+    if outcome.is_err:
+        error = outcome.error
+        assert error is not None
+        typer.secho(f"{error.category}: {error.message}", fg="red", err=True)
+        raise typer.Exit(EXIT_ENVIRONMENT)
+
+    result = outcome.unwrap()
+    typer.echo(f"═══ verdict: {result.verdict.value}  (rounds={result.rounds}) ═══")
+    for route_ in result.routes:
+        mark = "EXHAUSTED" if route_.exhausted else "routed"
+        typer.echo(f"  {mark}: {route_.render()}")
+    if result.open_issues_blocking:
+        typer.echo(f"  {result.open_issues_blocking} open finding(s) still blocking")
+    raise typer.Exit(EXIT_OK if result.green else EXIT_RED)
+
+
+@app.command("route")
+def route_failure(
+    gate: Annotated[str, typer.Option("--gate", help="The failing gate")],
+    area: Annotated[str, typer.Option("--area", help="Where it failed, if known")] = "",
+) -> None:
+    """Which agent owns a failing gate. `unknown` when nothing claims it."""
+    from ai_harness.quality.routing import route as route_for
+
+    typer.echo(route_for(gate, area=area))
+
+
 @config_app.command("show")
 def config_show(
     path: Annotated[Path, typer.Argument(help="Repository root")] = Path(),

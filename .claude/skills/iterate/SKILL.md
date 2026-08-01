@@ -1,6 +1,6 @@
 ---
 name: iterate
-description: Iterative Refinement (COLD-START loop) — enhanced market re-analysis, gap analysis between requirements and implementation, plan updates, feature implementation, and verification through the project's REAL hard-gate spine. Use this BEFORE real user signals exist; once a deployed product has PostHog/Sentry/support wired, switch to `signal-iterate`. Both loops share the same verification spine (verify-loop.sh + quality-gates.sh). Can be invoked repeatedly.
+description: Iterative Refinement (COLD-START loop) — enhanced market re-analysis, gap analysis between requirements and implementation, plan updates, feature implementation, and verification through the project's REAL hard-gate spine. Use this BEFORE real user signals exist; once a deployed product has PostHog/Sentry/support wired, switch to `signal-iterate`. Both loops share the same verification spine (`agent verify` + quality-gates.sh). Can be invoked repeatedly.
 argument-hint: "[focus area or specific aspect to investigate, optional]"
 allowed-tools: Task, WebSearch, WebFetch, Read, Write, Edit, Bash, Glob, Grep
 effort: max
@@ -256,9 +256,9 @@ LOOP:
   6. If tests fail:
        a. Read the failure output, identify the owning area (file/module).
        b. Route the fix to the owner skill:
-            scripts/route-failure.sh --gate <gate> --area <path>
+            agent route --gate <gate> --area <path>
           (don't free-form fix in this context — keep the ownership + the
-          3-attempt cap that verify-loop.sh enforces).
+          3-attempt cap that `agent verify` enforces).
        c. Apply the fix, go to step 5.
   7. If tests pass: mark task ✅ in docs/04-dev-plan.md.
   8. Move to next task.
@@ -281,7 +281,7 @@ must clear the SAME bar as the initial build.
 ### 5a. Run the verify-loop (test → route → fix → re-test + adversary)
 
 ```bash
-scripts/verify-loop.sh --agent --with-adversarial --tier "$TIER"
+agent verify --agent --with-adversarial --tier "$TIER"
 ```
 
 This runs the layered gates, routes each failure to its owner skill (3-attempt
