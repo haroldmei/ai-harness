@@ -1,0 +1,9 @@
+# Windows/WSL alternate-data-stream metadata (created when files are copied from Windows)
+*:Zone.Identifier
+
+# Local Claude Code settings (machine-specific)
+.claude/settings.local.json
+
+# Editor / OS noise
+.DS_Store
+*.swp

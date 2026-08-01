@@ -1,0 +1,28 @@
+# shellcheck ratchet baseline — scripts/ (severity: warning)
+# Regenerate with: scripts/shellcheck-gate.sh --update
+# Format: <file>\t<SC code>\t<allowed count>.  Lower is better; never raise a
+# number to make a gate pass — fix the finding or justify it in the PR.
+scripts/agent-inbox-setup.sh	SC1010	1
+scripts/agent-inbox.sh	SC1010	1
+scripts/agent-inbox.sh	SC2034	2
+scripts/agent-inbox.sh	SC2154	1
+scripts/agent-inbox.test.sh	SC2164	10
+scripts/agent-pipeline.sh	SC1010	1
+scripts/agent-pr-fixer.sh	SC2034	1
+scripts/agent-pr-fixer.sh	SC2154	2
+scripts/agent-pr-fixer.test.sh	SC2164	1
+scripts/agent-pr-merger.test.sh	SC2164	1
+scripts/agent-pr-reviewer.sh	SC2034	1
+scripts/agent-pr-reviewer.sh	SC2154	2
+scripts/agent-pr-reviewer.test.sh	SC2164	1
+scripts/agent-sandbox.test.sh	SC2164	1
+scripts/agent-scout-evidence.test.sh	SC2164	1
+scripts/agent-scout.test.sh	SC2164	4
+scripts/agent-triage-failure.sh	SC2034	1
+scripts/compose-deploy.test.sh	SC2164	1
+scripts/local-deploy.test.sh	SC2164	1
+scripts/release-train.test.sh	SC2164	1
+scripts/run-e2e.test.sh	SC2164	1
+scripts/run-visual.test.sh	SC2164	1
+scripts/slot-lock.test.sh	SC2154	1
+scripts/state-shard.test.sh	SC1090	1
