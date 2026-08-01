@@ -30,7 +30,9 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from ipaddress import ip_address
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -81,6 +83,10 @@ class VLLMEngine:
     name: str = "local"
     max_model_len: int | None = None
     """The server's declared window, when known. Used to reject before the wire, not after."""
+    allow_remote: bool = False
+    """L3: the endpoint is loopback, and pointing it elsewhere is a decision rather than a
+    typo. A base URL on the LAN means every prompt -- issue text, diff, file contents -- leaves
+    this box, which is one of the two things self-hosting was for."""
     counter: TokenCounter | None = None
     """How the prompt is measured for the pre-flight. Absent means no pre-flight, and then the
     server's 400 is the first anyone hears of it — correct, but a round trip later."""
@@ -92,6 +98,14 @@ class VLLMEngine:
             reports_cost=False,
         )
     )
+
+    def __post_init__(self) -> None:
+        if not self.allow_remote and not _is_loopback(self.base_url):
+            raise ValueError(
+                f"{self.base_url} is not loopback. A local roster that sends prompts off-box has "
+                "given up the privacy half of self-hosting; if that is intended, set "
+                "allow_remote=True so it is a decision somebody made."
+            )
 
     async def complete(self, request: LLMRequest) -> Outcome[Completion]:
         preflight = self._preflight(request)
@@ -307,3 +321,13 @@ class VLLMEngine:
             details={"server_said": body[:200]},
             dependency=f"model:{self.name}",
         )
+
+
+def _is_loopback(base_url: str) -> bool:
+    host = urlparse(base_url).hostname or ""
+    if host in ("localhost", "::1"):
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False

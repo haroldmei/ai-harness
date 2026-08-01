@@ -1,0 +1,59 @@
+# The policy for a local roster.
+#
+# L10: local is not trusted more for being local. The trust boundary, the broker and the policy
+# engine are unchanged. What IS different is the resistance of the model behind that boundary --
+# instruction-hierarchy adherence is one of the clearest capability gaps between a frontier model
+# and a 30B one, and this harness feeds the model issue bodies, diffs and gate logs written by
+# strangers.
+#
+# So three capabilities move, and the direction is the same in each case: from "a human can
+# approve it" to "not available here". The reasoning is that under injection the approval IS the
+# attack surface -- a model that is easier to steer produces more plausible-looking approval
+# requests, and approval fatigue does the rest. A capability you can approve your way into is a
+# capability you have.
+#
+#   install_deps    require_approval -> deny   a dependency name is attacker-controlled text that
+#                                              the model reads as a name rather than as prose
+#   git_force_push  require_approval -> deny   the one write that destroys someone else's history
+#   deploy_dev      require_approval -> deny   an environment is not worth an unattended mistake
+#
+# Everything else is `standard`. Raising any of these back is a decision, and it should be made
+# with the injection delta in docs/measurements/ in front of you rather than in the abstract.
+name: local
+
+merge_strategy: mr_only
+require_isolation: bubblewrap
+allow_degraded_isolation: false
+require_approval_to_start: false
+allow_deps_install_with_lockfile: false
+
+# Loopback only (L3). The model server is on this box; nothing else is reachable, and the
+# allowlist says so explicitly rather than by omission -- an empty allowlist and an allowlist of
+# one loopback address are different statements, and only the second one is a decision.
+egress_allowlist:
+  - "127.0.0.1"
+  - "localhost"
+
+capabilities:
+  read_repo: allow
+  write_workspace: allow
+  run_tests: allow
+  install_deps: deny
+  network: require_approval
+  git_push: allow
+  git_force_push: deny
+  forge_comment: allow
+  forge_merge: require_approval
+  modify_ci: require_approval
+  modify_migrations: require_approval
+  deploy_dev: deny
+  deploy_prod: deny
+  bypass_gate: deny
+
+budget:
+  max_usd_per_run: "25"
+  max_usd_per_repo_day: "500"
+  max_wall_clock_s: 21600
+  # The rails that can actually trip on a local roster (L5, #87).
+  max_model_seconds_per_run: 7200
+  max_gpu_seconds_per_repo_day: 57600
