@@ -18,11 +18,19 @@ Three decisions carried over from the shell units, each for a reason:
 `AGENT_BIN` and `WORKING_DIR` are substituted at install time rather than left as `%i`
 specifiers, because the failure mode of a wrong path here is a timer that fires every two
 minutes into a non-existent binary, which is noisy in exactly the way nobody reads.
+
+Phase 7 adds the one unit that is *not* a oneshot: the model server. It is long-running by
+nature, it takes its flags from the registry's arithmetic rather than from a copied command
+line, and it `Conflicts` with every other model's unit — because L2's "one resident model" has
+to hold against a hand-typed `systemctl start`, which is the path no lease inside the harness
+can see.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from ai_harness.llm.serving.models import ServingPlan
 
 TICK_SERVICE = """\
 [Unit]
@@ -93,6 +101,39 @@ Unit={unit_name}.service
 WantedBy=timers.target
 """
 
+SERVING_SERVICE = """\
+[Unit]
+Description=vLLM serving {model} ({repo_id}@{revision_short}) for ai-harness
+Documentation=https://github.com/haroldmei/ai-harness
+After=network-online.target
+# L2: one resident model per card. The residency lease enforces this inside the harness;
+# systemd enforces the same rule against a hand-typed `systemctl start`, which is the path
+# the lease cannot see.
+{conflicts}# A crash loop must not quietly hold the GPU: five failures in ten minutes stops the unit
+# rather than restarting into the same OOM forever.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=exec
+WorkingDirectory={working_dir}
+ExecStart={exec_start}
+# Weights are pinned by digest, so a start that would DOWNLOAD something is a start nobody
+# reviewed. Offline is the enforcement; --revision is only the intent.
+Environment=HF_HUB_OFFLINE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=CUDA_VISIBLE_DEVICES=0
+{environment}# Loading a 4-bit 30B and compiling its graphs takes tens of seconds. systemd's notion of
+# "started" is a bound port; the harness's is a returned token, and only the second one is
+# worth acting on.
+TimeoutStartSec={start_timeout_s}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+"""
+
 LABELS: tuple[tuple[str, str, str], ...] = (
     ("agent", "1f6feb", "the harness should build this"),
     ("wip", "fbca04", "claimed and in progress"),
@@ -155,3 +196,43 @@ def render(
         ),
         timer=timer_template.format(repo=repo, interval=interval, unit_name=name),
     )
+
+
+def serving_unit_name(model: str) -> str:
+    """``ai-harness-serve-qwen3-coder-30b``. Deterministic, so a re-install targets one file."""
+    slug = model.replace("/", "-").replace("_", "-").lower()
+    return f"ai-harness-serve-{slug}"
+
+
+def render_serving(
+    plan: ServingPlan,
+    *,
+    working_dir: str,
+    vllm_bin: str = "vllm",
+    conflicts: tuple[str, ...] = (),
+    environment: dict[str, str] | None = None,
+    start_timeout_s: int = 600,
+) -> tuple[str, str]:
+    """Render the serving unit for one model. Returns ``(unit_name, service_text)``.
+
+    ``conflicts`` are the other models in the registry, not a hand-maintained list: the point of
+    L2 is that the *set* of things that must not run together is derived from what exists.
+    """
+    argv = plan.argv(binary=vllm_bin)
+    conflict_lines = "".join(
+        f"Conflicts={serving_unit_name(other)}.service\n" for other in conflicts
+    )
+    lines = "".join(
+        f"Environment={key}={value}\n" for key, value in sorted((environment or {}).items())
+    )
+    service = SERVING_SERVICE.format(
+        model=plan.spec.name,
+        repo_id=plan.spec.repo_id,
+        revision_short=plan.spec.revision[:12],
+        conflicts=conflict_lines,
+        working_dir=working_dir,
+        exec_start=" ".join(argv),
+        environment=lines,
+        start_timeout_s=start_timeout_s,
+    )
+    return serving_unit_name(plan.spec.name), service

@@ -1,0 +1,56 @@
+# The models this host can serve, and the card they contend for.
+#
+# Every number here is an *artefact fact*, not a preference, and the flags that vLLM is started
+# with are derived from them by `ai_harness.llm.serving.models` — see `agent serving args
+# <model> --explain` for the arithmetic. Copying a `--max-model-len` from a blog post written
+# against an 80 GB card is how a server starts fine and then OOMs on the first long diff.
+#
+# `revision` is a commit digest, never a tag (L1). A tag moves; a model upgrade changes the
+# behaviour of every agent at once and is therefore a deployment, not a pull. The digests below
+# are placeholders in the shape of the real thing — `agent serving check` refuses a server whose
+# loaded revision does not match, so a wrong pin fails loudly at startup rather than quietly in
+# a review.
+
+gpu:
+  name: RTX 4090
+  vram_gb: 24.0
+  # Left for the compositor, CUDA context and fragmentation headroom. On a headless box this
+  # can go to 0.5; on a workstation somebody is also using, it cannot.
+  reserve_gb: 1.0
+
+models:
+  # Qwen3-Coder 30B-A3B — the implementer (L1).
+  #   weights : ~30.5B params at 4-bit AWQ, plus non-quantised embeddings ⇒ ~17.5 GB
+  #   kv/token: 2 (K,V) × 48 layers × 4 KV heads × 128 head_dim × 1 B (fp8) = 49 152 B
+  - name: qwen3-coder-30b
+    repo_id: Qwen/Qwen3-Coder-30B-A3B-Instruct-AWQ
+    revision: "0000000000000000000000000000000000000000"
+    quantisation: awq-4bit
+    weights_gb: 17.5
+    kv_bytes_per_token: 49152
+    native_max_model_len: 262144
+    activation_gb: 1.5
+    kv_cache_dtype: fp8
+    # The cache would hold ~87k tokens; 64k is the operator ceiling, because prefill time grows
+    # with the window and on a serial GPU that time is taken from the tests.
+    cap_max_model_len: 65536
+    port: 8000
+    roles: [implementer, planner, triager]
+
+  # Devstral 24B — the reviewer, and the reason `reviewer != implementer` still means something
+  # on one card (L2: never co-resident with the above).
+  #   weights : ~24B params at 4-bit AWQ ⇒ ~14.0 GB
+  #   kv/token: 2 × 40 layers × 8 KV heads × 128 head_dim × 1 B (fp8) = 81 920 B
+  - name: devstral-24b
+    repo_id: mistralai/Devstral-Small-2507-AWQ
+    revision: "1111111111111111111111111111111111111111"
+    quantisation: awq-4bit
+    weights_gb: 14.0
+    kv_bytes_per_token: 81920
+    native_max_model_len: 131072
+    activation_gb: 1.5
+    kv_cache_dtype: fp8
+    # Reviews read a bundled diff, not a repository. 32k is deliberate, not a limit.
+    cap_max_model_len: 32768
+    port: 8001
+    roles: [reviewer, conflict_resolver]

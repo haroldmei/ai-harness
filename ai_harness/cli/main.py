@@ -24,6 +24,7 @@ import typer
 
 from ai_harness.cli.commands.drive import drive_app
 from ai_harness.cli.commands.install import install_app
+from ai_harness.cli.commands.serving import serving_app
 from ai_harness.cli.commands.shadow import shadow_app
 from ai_harness.cli.commands.state import record, state_app
 from ai_harness.config import ConfigError, HarnessConfig, load_config, load_policy
@@ -44,6 +45,8 @@ config_app = typer.Typer(help="Show the effective configuration, profile and pol
 app.add_typer(gates_app, name="gates")
 app.add_typer(config_app, name="config")
 app.add_typer(shadow_app, name="shadow")
+# Phase 7: the model is a process on this box now, so it is inspectable like one.
+app.add_typer(serving_app, name="serving")
 
 # Phase 1: durable state is written (by the shell, via `record`) and readable, but nothing
 # reads it to make a decision yet — that is Phase 4.
