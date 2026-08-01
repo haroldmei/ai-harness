@@ -18,6 +18,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from ai_harness.agents.base import PROMPTS, Agent, AgentCall
+from ai_harness.agents.edits import AnchoredEdit, EditError, apply_anchor
 from ai_harness.context.trust import Provenance, Trusted, TrustedPrompt, Untrusted
 from ai_harness.kernel.outcome import ErrorCategory, Outcome
 from ai_harness.llm.client import LLMClient
@@ -25,7 +26,10 @@ from ai_harness.schemas.enums import Brief
 from ai_harness.schemas.plan import WorkPlan
 from ai_harness.tools.broker import ToolBroker, ToolCall
 
-TEMPLATE_ID = "implementer-v1"
+TEMPLATE_ID = "implementer-v2"
+"""v2 adds the anchored edit form. A prompt change is a deployment (Q13): the template id moves
+so a regression is attributable to the version that caused it, and v1 stays on disk because the
+rollback has to be a configuration change rather than a git revert."""
 
 
 class FileEdit(BaseModel):
@@ -42,6 +46,10 @@ class ImplementationOutput(BaseModel):
 
     summary: str = Field(min_length=1)
     edits: list[FileEdit] = Field(default_factory=list)
+    anchored_edits: list[AnchoredEdit] = Field(default_factory=list)
+    """The cheap expression of the same thing (#88). Re-materialised into whole files inside
+    this agent, so the broker, the audit trail and the subgraph see exactly what they saw
+    before -- output tokens are the only thing that changes."""
     deletions: list[str] = Field(default_factory=list)
     tests_added: list[str] = Field(default_factory=list)
     blocked: bool = False
@@ -51,7 +59,7 @@ class ImplementationOutput(BaseModel):
 
     @property
     def produced_work(self) -> bool:
-        return bool(self.edits or self.deletions)
+        return bool(self.edits or self.anchored_edits or self.deletions)
 
 
 BRIEF_HEADERS = {
@@ -157,7 +165,11 @@ class Implementer:
 
     async def _apply(self, output: ImplementationOutput) -> Outcome[int]:
         """Every write goes through the broker — containment, policy and audit included."""
-        for edit in output.edits:
+        materialised = self._materialise(output)
+        if materialised.is_err:
+            return Outcome.of(materialised.error)  # type: ignore[arg-type]
+
+        for edit in materialised.unwrap():
             result = await self.broker.invoke(
                 ToolCall(
                     tool="fs.write",
@@ -174,7 +186,43 @@ class Implementer:
             )
             if result.is_err:
                 return Outcome.of(result.error)  # type: ignore[arg-type]
-        return Outcome.ok(len(output.edits) + len(output.deletions))
+        return Outcome.ok(len(output.edits) + len(output.anchored_edits) + len(output.deletions))
+
+    def _materialise(self, output: ImplementationOutput) -> Outcome[list[FileEdit]]:
+        """Turn anchored edits into whole-file writes, or fail before anything is written.
+
+        Deliberately all-or-nothing: a run where two of three hunks applied is the half-applied
+        patch that whole-file writes exist to prevent, and it would leave a tree nobody can
+        reason about. A VALIDATION failure here goes through the repair loop that already
+        exists, and the model is told exactly which anchor did not match.
+        """
+        edits = list(output.edits)
+        for anchored in output.anchored_edits:
+            target = self.workspace / anchored.path
+            if not target.exists():
+                return Outcome.fail(
+                    ErrorCategory.VALIDATION,
+                    f"{anchored.path} does not exist, so it cannot be edited by anchor",
+                    remedy="write the whole file instead; an anchor needs something to anchor to",
+                )
+            try:
+                result = apply_anchor(target.read_text(), anchored)
+            except EditError as exc:
+                return Outcome.fail(
+                    ErrorCategory.VALIDATION,
+                    str(exc),
+                    remedy=(
+                        "copy the anchor verbatim from the file, and extend it until it appears "
+                        "exactly once. An ambiguous anchor is refused rather than guessed"
+                    ),
+                    details={
+                        "path": exc.path,
+                        "occurrences": exc.occurrences,
+                        "anchor_head": exc.anchor[:200],
+                    },
+                )
+            edits.append(FileEdit(path=result.path, content=result.content, intent=result.intent))
+        return Outcome.ok(edits)
 
     def editor(self, brief: ImplementerBrief, *, run: object = None):  # type: ignore[no-untyped-def]
         """Adapt to ``ImplementSubgraph.editor``: it passes a context, we already have the brief."""
