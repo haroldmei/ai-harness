@@ -22,6 +22,7 @@ from typing import Annotated
 
 import typer
 
+from ai_harness.cli.commands.doctor import doctor_app
 from ai_harness.cli.commands.drive import drive_app
 from ai_harness.cli.commands.install import install_app
 from ai_harness.cli.commands.serving import serving_app
@@ -47,6 +48,7 @@ app.add_typer(config_app, name="config")
 app.add_typer(shadow_app, name="shadow")
 # Phase 7: the model is a process on this box now, so it is inspectable like one.
 app.add_typer(serving_app, name="serving")
+app.registered_commands.extend(doctor_app.registered_commands)
 
 # Phase 1: durable state is written (by the shell, via `record`) and readable, but nothing
 # reads it to make a decision yet — that is Phase 4.

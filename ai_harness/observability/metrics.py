@@ -95,6 +95,42 @@ class Metrics:
     def record_cost(self, usd: Decimal, *, repo: str, state: str, model: str) -> None:
         self.increment("harness_cost_usd_total", float(usd), repo=repo, state=state, model=model)
 
+    def record_gpu(self, reading: object, *, gpu: str = "0") -> None:
+        """The card, on the exporter that already exists (#93).
+
+        Nothing here fails when a field is absent: a box without `nvidia-smi` produces an empty
+        reading, and an empty reading produces no series rather than a zero. A zero would read
+        as "the card is idle", which is a different and much worse claim than "we did not look".
+        """
+        for name, attribute in (
+            ("gpu_utilisation_pct", "utilisation_pct"),
+            ("gpu_memory_used_mb", "memory_used_mb"),
+            ("gpu_memory_free_mb", "memory_free_mb"),
+            ("gpu_temperature_c", "temperature_c"),
+            ("gpu_power_w", "power_w"),
+        ):
+            value = getattr(reading, attribute, None)
+            if value is not None:
+                self.set(name, float(value), gpu=gpu)
+        if getattr(reading, "available", False):
+            self.set(
+                "gpu_throttling", 1.0 if getattr(reading, "throttling", False) else 0.0, gpu=gpu
+            )
+
+    def record_serving(self, metrics: object, *, model: str) -> None:
+        """The serving stack's own numbers, on our exporter rather than in a second system."""
+        values = getattr(metrics, "values", {})
+        for name, value in values.items():
+            self.set(name, float(value), model=model)
+        mean_ttft = getattr(metrics, "mean_ttft_s", None)
+        if mean_ttft is not None:
+            self.set("serving_ttft_seconds_mean", float(mean_ttft), model=model)
+
+    def record_swap(self, *, from_model: str, to_model: str, seconds: float) -> None:
+        """Time spent loading weights rather than generating — the price of L2, kept visible."""
+        self.increment("model_swaps_total", 1.0, from_model=from_model or "-", to_model=to_model)
+        self.observe("model_swap_seconds", seconds, to_model=to_model)
+
     def record_breakers(self, snapshot: dict[str, str]) -> None:
         """What is broken upstream — one glance instead of a hundred deferred runs."""
         for dependency, state in snapshot.items():
