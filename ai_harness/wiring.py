@@ -87,7 +87,7 @@ class Harness:
 # ── the pieces ───────────────────────────────────────────────────────────────────
 
 
-def build_engine(config: HarnessConfig) -> Engine:
+def build_engine(config: HarnessConfig, *, logger: Logger | None = None) -> Engine:
     """One engine, chosen by name. An unknown name is a startup error, not a default.
 
     Defaulting here would mean a typo in ``roster.engine`` silently ran every model call
@@ -112,22 +112,42 @@ def build_engine(config: HarnessConfig) -> Engine:
         engine: Engine = OpenAIEngine()
         return engine
     if name in ("local", "vllm"):
-        return build_local_engine(config)
+        return build_local_engine(config, logger=logger)
     raise WiringError(
         f"unknown engine {name!r}; expected claude-cli, anthropic, openai or local. "
         "Nothing is defaulted here on purpose: a typo would silently change every model call."
     )
 
 
-def build_local_engine(config: HarnessConfig, *, model: str | None = None) -> Engine:
-    """A vLLM engine for one served model, with its window taken from the registry.
+def probe_cache_path(config: HarnessConfig) -> Path:
+    state = config.state_dir
+    if not state.is_absolute():
+        state = config.repo_path / state
+    return state / "probe-cache.json"
 
-    The window is passed in rather than discovered per call because the *point* of L6 is to
-    refuse an oversized prompt before it reaches the wire. An engine that learns its window from
-    the first rejection has already paid for the round trip it exists to avoid.
+
+def build_local_engine(
+    config: HarnessConfig,
+    *,
+    model: str | None = None,
+    logger: Logger | None = None,
+) -> Engine:
+    """A vLLM engine for one served model, with its window and capabilities already known.
+
+    The window comes from the registry rather than from the first rejection: the *point* of L6 is
+    to refuse an oversized prompt before it reaches the wire, and an engine that learns its window
+    by being told off has already paid for the round trip it exists to avoid.
+
+    Capabilities come from the cached probe when one exists for this exact (server, model,
+    revision), and otherwise stay at their conservative defaults with a warning. This is
+    deliberately not a refusal: an unprobed server is *slower* — every structured call falls back
+    to the extraction ladder — but it is not unsafe, and refusing here would make `agent work`
+    unusable until somebody ran a second command. The probe is network I/O, and the composition
+    root does not do network I/O.
     """
     from ai_harness.llm.engines.vllm import VLLMEngine
     from ai_harness.llm.serving.models import RegistryError, load_registry
+    from ai_harness.llm.serving.probe import ProbeCache
 
     try:
         registry = load_registry(root=config.repo_path)
@@ -138,7 +158,23 @@ def build_local_engine(config: HarnessConfig, *, model: str | None = None) -> En
             "Refusing at startup: a worker that discovers this after claiming has already spent "
             "a dispatch and a lease."
         ) from exc
-    return VLLMEngine(base_url=plan.base_url, max_model_len=plan.max_model_len)
+
+    engine = VLLMEngine(base_url=plan.base_url, max_model_len=plan.max_model_len)
+    cached = ProbeCache(probe_cache_path(config)).load(
+        base_url=plan.base_url, model=plan.spec.name, revision=plan.spec.revision
+    )
+    if cached is not None:
+        engine.capabilities = cached.capabilities()
+        if cached.max_model_len is not None:
+            engine.max_model_len = min(plan.max_model_len, cached.max_model_len)
+    elif logger is not None:
+        logger.warning(
+            "no capability probe for this model revision; assuming the conservative defaults",
+            model=plan.spec.name,
+            effect="structured output goes through the extraction ladder and costs repairs",
+            remedy=f"run `agent serving probe {plan.spec.name}`",
+        )
+    return engine
 
 
 def build_forge(config: HarnessConfig) -> Forge | None:
@@ -260,7 +296,10 @@ def build_deps(
     tracker = CostTracker(clock=clock)
     breaker = CircuitBreaker(config.policy.budget, tracker, clock=clock)
     client = LLMClient(
-        engine=engine or build_engine(config), tracker=tracker, breaker=breaker, clock=clock
+        engine=engine or build_engine(config, logger=logger),
+        tracker=tracker,
+        breaker=breaker,
+        clock=clock,
     )
     resolved_forge = forge if forge is not None else build_forge(config)
 

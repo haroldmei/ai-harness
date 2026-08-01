@@ -161,6 +161,54 @@ def serving_check(
         typer.echo(f"  first token in {health.latency_s:.2f}s")
 
 
+@serving_app.command("probe")
+def serving_probe(
+    model: Annotated[str, typer.Argument(help="Served model name")],
+    path: Annotated[Path, typer.Option("--path", help="Repository root")] = Path(),
+    file: Annotated[Path | None, typer.Option("--file", help="Registry path")] = None,
+) -> None:
+    """Measure what this server can do, and cache it against the loaded revision (L4)."""
+    from ai_harness.config import load_config
+    from ai_harness.llm.serving.probe import ProbeCache, check_window, probe
+    from ai_harness.wiring import probe_cache_path
+
+    registry = _registry(path, file)
+    try:
+        plan = registry.plan(model)
+    except RegistryError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_CONFIG) from exc
+
+    outcome = asyncio.run(
+        probe(base_url=plan.base_url, model=plan.spec.name, revision=plan.spec.revision)
+    )
+    if outcome.is_err:
+        error = outcome.error
+        assert error is not None
+        typer.secho(f"{model}: {error.message}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_UNHEALTHY)
+
+    result = outcome.unwrap()
+    ProbeCache(probe_cache_path(load_config(root=path))).store(result)
+
+    typer.echo(f"{model}:")
+    typer.echo(f"  guided decoding : {'yes' if result.guided_decoding else 'NO'}")
+    typer.echo(f"  window          : {result.max_model_len or '—'} (planned {plan.max_model_len})")
+    typer.echo(f"  tokenizer       : {'yes' if result.tokenizer_available else 'NO'}")
+    typer.echo(
+        "  prefix caching  : "
+        + ("observed" if result.prefix_caching else "not yet observed — learned from traffic")
+    )
+    for note in result.notes:
+        typer.secho(f"  note: {note}", fg=typer.colors.YELLOW)
+
+    window = check_window(result, required=plan.max_model_len)
+    if window.is_err and window.error is not None:
+        typer.secho(f"  {window.error.message}", fg=typer.colors.RED, err=True)
+        typer.echo(f"  remedy: {window.error.remedy}", err=True)
+        raise typer.Exit(EXIT_UNHEALTHY)
+
+
 @serving_app.command("bench")
 def serving_bench(
     model: Annotated[str, typer.Argument(help="Served model name")],
