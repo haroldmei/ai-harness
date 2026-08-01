@@ -11,8 +11,10 @@ gates, and proposes the result — unattended, resumable, and bounded in dollars
   seven milestones (P0–P6) that mirror §24 of the design. Each milestone has a tracking epic.
 * **The decisions**: [`docs/decisions/0001-adopted-defaults.md`](docs/decisions/0001-adopted-defaults.md)
   — the fourteen open questions of §27, answered.
+* **The runbook**: [`docs/runbooks/migration.md`](docs/runbooks/migration.md) — what must be true
+  before each cutover, how to verify it, and how to get back.
 
-## Status — Phases 0–3 are implemented
+## Status — Phases 0–4 are implemented
 
 **Phase 0** changes no behaviour anywhere: the kernel, the typed contracts, the
 structured-output layer, gate discovery, and a read-only CLI that runs the repository's *own*
@@ -22,6 +24,13 @@ gates. The rollback is "delete the package".
 keeps reading labels; it additionally calls `agent record` at each stage boundary, so runs,
 checkpoints, counters and cost become queryable *before any behaviour moves*. The rollback is
 "stop calling the helper".
+
+**Phase 4** completes the loop: `VALIDATE` (whose fault is a red gate — with "the tooling could
+not run" as a third answer) and `INTEGRATE` (`MR_ONLY` by default, compare-and-swap push, a
+conflict-marker scan the resolver's own verdict cannot talk its way past). Plus `agent tick`
+replacing the shell driver, the MR evidence block, and the chaos and security suites. `FF_ONLY`
+is refused automatically unless the gates were *declared* rather than inferred and the base is
+confirmed green.
 
 **Phase 3** adds the states that write code: `ANALYSE` (the only state where a model makes a
 routing-relevant judgement, schema-constrained) and `IMPLEMENT` (one subgraph, three briefs,
@@ -73,6 +82,7 @@ one schema, so a mixed rollout cannot disagree about `PR_MAX_ROUNDS` or `QG_GATE
 | `agents/` | The `Agent` base (the only caller of `call_structured`), the roster that refuses a self-review, and the reviewer with its versioned prompt |
 | `subgraphs/` | `REVIEW`, `ANALYSE` and `IMPLEMENT` — isolated, bounded, idempotent |
 | `tools/` + `policies/` | Capability resolution before every action, path containment, an audit record per call, and approvals that park rather than block |
+| `workers/` | `agent tick` — reconcile, admit, dispatch, sweep — single-pass and safe at a 2-minute cadence, with the scheduler outside the agent |
 
 ### Invariants under test
 
@@ -104,7 +114,12 @@ harness's own history (Appendix B of the design):
 * an approval nobody answers is a decision not to proceed (24h → deferred, 72h → escalated);
 * a red gate is classified from evidence before judgement — "the tooling could not run" is a
   third outcome, and a red base is never blamed on an unconfirmed guess;
-* work with no signature never opens a self-filing loop.
+* work with no signature never opens a self-filing loop;
+* a deleted or skipped test parks the run **regardless of how green the suite is**;
+* a flake is confirmed by re-running only the failed gate, and is reported rather than hidden;
+* conflict markers never become a commit — the tree is the evidence, not the resolver's verdict;
+* a push is refused if the base moved, and `FF_ONLY` is refused if the gates were inferred;
+* no credential of any vendor reaches the sandbox — scrubbed by name *shape*, not by a list.
 
 ## Development
 

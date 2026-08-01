@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,7 +28,18 @@ from ai_harness.kernel.outcome import ErrorCategory, Outcome
 from ai_harness.schemas.enums import Isolation
 
 _SCRUBBED_PREFIXES = ("GITHUB_", "GH_", "GITLAB_", "AWS_", "ANTHROPIC_", "OPENAI_", "HARNESS_")
-_SCRUBBED_EXACT = ("SSH_AUTH_SOCK", "GIT_ASKPASS", "NPM_TOKEN", "PYPI_TOKEN")
+_SCRUBBED_EXACT = ("SSH_AUTH_SOCK", "GIT_ASKPASS", "AWS_PROFILE", "GOOGLE_APPLICATION_CREDENTIALS")
+
+_SCRUBBED_SHAPE = re.compile(
+    r"(?i)(^|_)(TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|CREDENTIALS|AUTH|APIKEY|PAT)($|_)"
+)
+"""Scrub by the *shape* of the name, not by a list of vendors somebody remembered.
+
+A prefix denylist fails open for every provider nobody thought of — this host alone carries
+``XAI_API_KEY``, ``SUPABASE_ACCESS_TOKEN``, ``POSTHOG_API_KEY``, ``EXPO_TOKEN`` and
+``CLOUDFLARE_API_TOKEN``, none of which the original list matched. The security suite found
+that, and a denylist would have needed extending again on the next machine.
+"""
 
 ORDER = (Isolation.CONTAINER, Isolation.BUBBLEWRAP, Isolation.NONE)
 
@@ -137,7 +149,11 @@ class Sandbox:
         scrubbed = {
             key: value
             for key, value in os.environ.items()
-            if not key.startswith(_SCRUBBED_PREFIXES) and key not in _SCRUBBED_EXACT
+            if not (
+                key.startswith(_SCRUBBED_PREFIXES)
+                or key in _SCRUBBED_EXACT
+                or _SCRUBBED_SHAPE.search(key)
+            )
         }
         scrubbed["HOME"] = str(self.workspace)
         scrubbed["GIT_TERMINAL_PROMPT"] = "0"

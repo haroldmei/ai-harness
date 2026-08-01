@@ -18,6 +18,16 @@ def contained(root: Path, candidate: str | Path) -> Outcome[Path]:
     """Resolve ``candidate`` and prove it is inside ``root``, or refuse it."""
     base = root.resolve()
     target = Path(candidate)
+
+    # `~` is not an ordinary path component. Python treats it literally, so `~/.ssh/id_rsa`
+    # resolves happily *inside* the workspace — but a shell, a config loader or anything else
+    # downstream expands it to $HOME. Refusing it removes the disagreement entirely.
+    if any(part.startswith("~") for part in target.parts):
+        return Outcome.fail(
+            ErrorCategory.POLICY,
+            f"{candidate} contains a `~` component, which means different things to different "
+            "readers; the workspace is addressed literally",
+        )
     absolute = target if target.is_absolute() else base / target
     try:
         resolved = absolute.resolve()
