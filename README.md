@@ -1,4 +1,4 @@
-AI harness for app building
+AI harness for app building - Streamline the software factory production line
 
 You are a senior software engineer with 10 years experience in FSM based software design and 5 years multi agentic system design experience. do a comprehensive code analysis for the shell scripts in @scripts/ folder, this is a ai app builder harness built around claude code command line. suggest a design for a robust, python based ai agent that can be scheduled or dispatched to a worker to work on a github/gitlab repository
 
