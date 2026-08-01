@@ -105,3 +105,94 @@ def product_show(
 ) -> None:
     """Every shard, merged, for reading."""
     typer.echo(json.dumps(_state(path).show(), indent=2, ensure_ascii=False))
+
+
+# ── iterations (#109) ────────────────────────────────────────────────────────────
+
+iteration_app = typer.Typer(help="The iteration log: count, index, immutability.")
+
+
+def _iterations(path: Path):  # type: ignore[no-untyped-def]
+    """Paths come from the profile, never from a constant.
+
+    Where a repository keeps its iterations and whether it generates an index are that
+    repository's conventions, and a package that hard-codes them has assumed the one project it
+    was supposed to be able to target (Q2).
+    """
+    from ai_harness.config import load_config
+    from ai_harness.product.iterations import Iterations
+
+    profile = load_config(root=path).profile
+    return Iterations(
+        directory=path / profile.iterations_dir,
+        state=_state(path),
+        index_file=(path / profile.iteration_index) if profile.iteration_index else None,
+    )
+
+
+@iteration_app.command("count")
+def iteration_count(
+    mode: Annotated[str, typer.Argument(help="current | next | peek")] = "current",
+    path: Annotated[Path, typer.Option("--path", help="Repository root")] = Path(),
+) -> None:
+    """The iteration number. `next` claims and persists it; `peek` does not."""
+    iterations = _iterations(path)
+    if mode == "current":
+        typer.echo(iterations.current())
+    elif mode == "peek":
+        typer.echo(iterations.peek_next())
+    elif mode == "next":
+        typer.echo(iterations.take_next())
+    else:
+        typer.secho(f"unknown mode {mode!r}; expected current, next or peek", fg="red", err=True)
+        raise typer.Exit(EXIT_USAGE)
+
+
+@iteration_app.command("index")
+def iteration_index(
+    path: Annotated[Path, typer.Option("--path", help="Repository root")] = Path(),
+    check: Annotated[bool, typer.Option("--check", help="Fail if the index is stale")] = False,
+) -> None:
+    """Regenerate the iteration index from the iteration files."""
+    iterations = _iterations(path)
+    if iterations.index_file is None:
+        typer.secho(
+            "no iteration index is configured for this repository — set profile.iteration_index "
+            "in .harness/config.yaml if it keeps one",
+            fg="yellow",
+            err=True,
+        )
+        raise typer.Exit(EXIT_USAGE)
+    rendered = iterations.render_index()
+    target = iterations.index_file
+
+    if check:
+        current = target.read_text(encoding="utf-8") if target.exists() else ""
+        if current != rendered:
+            typer.secho(f"{target} is stale — run `agent iteration index`", fg="red", err=True)
+            raise typer.Exit(EXIT_ERROR)
+        typer.echo(f"{target} is current")
+        return
+
+    written = iterations.write_index()
+    for note in iterations.notes:
+        typer.secho(f"note: {note}", fg="yellow", err=True)
+    typer.echo(str(written))
+
+
+@iteration_app.command("check")
+def iteration_check(
+    base: Annotated[str, typer.Option(help="Base to compare against")] = "origin/main",
+    path: Annotated[Path, typer.Option("--path", help="Repository root")] = Path(),
+) -> None:
+    """Fail if this branch modified or deleted a past iteration."""
+    outcome = _iterations(path).check_immutable(base, root=path)
+    if outcome.is_err:
+        error = outcome.error
+        assert error is not None
+        typer.secho(error.message, fg="red", err=True)
+        for violation in error.details.get("violations", []):
+            typer.echo(f"  {violation}", err=True)
+        typer.echo(f"  remedy: {error.remedy}", err=True)
+        raise typer.Exit(EXIT_ERROR)
+    typer.echo("iteration-immutable: no past iteration was modified")

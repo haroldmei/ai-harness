@@ -543,7 +543,7 @@ You are acting as a product iteration engineer running the first refinement cycl
 3. **Plan Updates:** Add new FR/NFR entries (tagged `[Iteration 1]`). Append new tasks to `docs/04-dev-plan.md`.
 4. **Implementation:** For each new task, run implement → test → fix loop until tests pass.
 5. **Full Verification:** Run ALL tests (unit + integration + smoke + E2E). Run `npm audit` for security. Check build for bundle regressions. Fix any failures.
-6. **Iteration Log:** Create `docs/iterations/001-issue-<N>-<slug>.md` (per-iteration file; see CLAUDE.md for naming convention) with findings, gaps addressed, test results. Then run `scripts/generate-iteration-index.sh` to regenerate `docs/06-iteration-log.md`.
+6. **Iteration Log:** Create `docs/iterations/001-issue-<N>-<slug>.md` (per-iteration file; see CLAUDE.md for naming convention) with findings, gaps addressed, test results. Then run `agent iteration index` to regenerate `docs/06-iteration-log.md`.
 7. Commit and push:
    ```
    git add .

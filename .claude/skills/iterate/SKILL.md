@@ -42,7 +42,7 @@ back-half (Phases 4–6) is identical across both loops.
 2. **Iteration number — from state, NOT by reading the log.** The iteration counter
    lives in `state.json .iteration_count`; reserve this run's number in O(1):
    ```bash
-   N=$(scripts/iteration-count.sh --next)   # increments + persists; prints the new number
+   N=$(agent iteration count next)   # increments + persists; prints the new number
    ```
    Do **not** read `docs/06-iteration-log.md` to count iterations — it is now a
    generated index (issue #2167). The counter lives in state.json for O(1) access.
@@ -378,7 +378,7 @@ After writing the file above, update the compact companion so the next run has
 prior-iteration context WITHOUT reading every iteration file (issue #1698):
 
 ```bash
-scripts/iteration-digest.sh --add --iter "$N" --date "$(date +%F)" \
+agent iteration digest --add --iter "$N" --date "$(date +%F)" \
   --headline "<ONE line: the gap/issue this iteration closed — in single-issue mode: 'issue #<n>: <title>'>"
 ```
 
@@ -392,7 +392,7 @@ When you need prior-iteration context in a later run, read THAT digest — never
 ### Regenerate the index (auto-generated from the directory)
 
 ```bash
-scripts/generate-iteration-index.sh
+agent iteration index
 ```
 
 This regenerates `docs/06-iteration-log.md` as a machine-generated index of all

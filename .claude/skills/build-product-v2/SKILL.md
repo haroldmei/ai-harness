@@ -881,7 +881,7 @@ Run locally:     <state.local_quickstart>     (also in docs/RUN.md)
 `seed-integrity` quality gate. If it is null at completion, the build
 is incomplete — do not print "Build Complete" and surface to the user.
 
-Create `docs/iterations/000-issue-<N>-<slug>.md` as iteration 0, then run `scripts/generate-iteration-index.sh` to regenerate the index at `docs/06-iteration-log.md`.
+Create `docs/iterations/000-issue-<N>-<slug>.md` as iteration 0, then run `agent iteration index` to regenerate the index at `docs/06-iteration-log.md`.
 
 ---
 

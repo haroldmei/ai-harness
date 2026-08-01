@@ -25,7 +25,7 @@ import typer
 from ai_harness.cli.commands.doctor import doctor_app
 from ai_harness.cli.commands.drive import drive_app
 from ai_harness.cli.commands.install import install_app
-from ai_harness.cli.commands.product import product_app
+from ai_harness.cli.commands.product import iteration_app, product_app
 from ai_harness.cli.commands.serving import serving_app
 from ai_harness.cli.commands.shadow import shadow_app
 from ai_harness.cli.commands.state import record, state_app
@@ -52,6 +52,7 @@ app.add_typer(shadow_app, name="shadow")
 app.add_typer(serving_app, name="serving")
 # Phase 8: the product build's state, ported off `jq` and the state-*.sh scripts.
 app.add_typer(product_app, name="product")
+app.add_typer(iteration_app, name="iteration")
 app.registered_commands.extend(doctor_app.registered_commands)
 
 # Phase 1: durable state is written (by the shell, via `record`) and readable, but nothing

@@ -35,6 +35,16 @@ class RepoProfile(BaseModel):
     gate_entry_point: list[str] | None = None
     tier: Tier = Tier.LAUNCH
 
+    iterations_dir: str = "docs/iterations"
+    """Where a product build records what it tried. A convention, so it is configuration."""
+    iteration_index: str = ""
+    """The generated index, when a repository keeps one. Empty means it does not.
+
+    Deliberately unset by default: the numbered-document layout is one project's convention, and
+    a package that names it has assumed a repository it was supposed to be able to target
+    (Q2, W12). The repository that uses it says so in its own profile.
+    """
+
     generated_paths: list[str] = Field(default_factory=list)
     """Conflicts here are resolved by *take base + regenerate*, never by a model.
 

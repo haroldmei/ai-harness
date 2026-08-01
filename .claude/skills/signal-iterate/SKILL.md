@@ -344,7 +344,7 @@ After writing the file above, update the compact companion so later runs get
 prior-iteration context WITHOUT reading every iteration file (issue #1698):
 
 ```bash
-scripts/iteration-digest.sh --add --iter "$N" --date "$(date +%F)" \
+agent iteration digest --add --iter "$N" --date "$(date +%F)" \
   --headline "<ONE line: the one change shipped this iteration>"
 ```
 
@@ -356,7 +356,7 @@ When you need prior-iteration context, read THAT digest — never the full
 ### Regenerate the index (auto-generated from the directory)
 
 ```bash
-scripts/generate-iteration-index.sh
+agent iteration index
 ```
 
 This regenerates `docs/06-iteration-log.md` as a machine-generated index. Do NOT
