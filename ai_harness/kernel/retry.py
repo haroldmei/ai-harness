@@ -105,6 +105,10 @@ DEFAULT_POLICIES: dict[ErrorCategory, RetryPolicy] = {
         retry_on=frozenset({ErrorCategory.VALIDATION}),
         fallback="escalate",
     ),
+    # Never retried, and not because it is hopeless: the same bytes are rejected identically
+    # every time. What clears it is a *smaller assembly*, which is a new request rather than a
+    # retry, and it belongs to the caller that knows what may be dropped (L6).
+    ErrorCategory.CONTEXT_OVERFLOW: NO_RETRY,
     ErrorCategory.MODEL_FAILURE: RetryPolicy(
         attempts=2,
         base_delay_s=5,

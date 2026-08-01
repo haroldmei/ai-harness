@@ -52,6 +52,12 @@ class ErrorCategory(StrEnum):
     VALIDATION = "validation"
     """Model output failed its schema. Bounded repair, then escalate with the last output."""
 
+    CONTEXT_OVERFLOW = "context_overflow"
+    """The prompt was longer than the model's window. The most *predictable* failure in the
+    system, and the one a hosted 200k-token model made invisible: it is deterministic, the
+    caller knows both numbers, and the fix is to assemble less — never to retry the same bytes
+    and never to blame the model. Distinct from MODEL_FAILURE because nothing ran."""
+
     MODEL_FAILURE = "model_failure"
     """The model ran and produced unusable output. Its own fault, so it costs budget."""
 
@@ -93,9 +99,16 @@ NON_BUDGET_CONSUMING: frozenset[ErrorCategory] = frozenset(
         ErrorCategory.AUTH,
         ErrorCategory.POLICY,
         ErrorCategory.NEEDS_HUMAN,
+        ErrorCategory.CONTEXT_OVERFLOW,
     }
 )
 """Failures that are not the attempt's fault. None of these may increment a state budget.
+
+``CONTEXT_OVERFLOW`` is here because the server rejected the request before generating a token:
+nothing was produced, so nothing was spent. It is deliberately *not* in :data:`RETRYABLE` —
+re-sending the identical prompt fails identically, and the only useful response is to assemble
+a smaller one (§17.1, L6).
+
 
 An empty-envelope *streak* is bounded separately (§16.2) precisely because the category
 itself must stay non-consuming.

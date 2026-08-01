@@ -111,10 +111,34 @@ def build_engine(config: HarnessConfig) -> Engine:
         _require("OPENAI_API_KEY")
         engine: Engine = OpenAIEngine()
         return engine
+    if name in ("local", "vllm"):
+        return build_local_engine(config)
     raise WiringError(
-        f"unknown engine {name!r}; expected claude-cli, anthropic or openai. "
+        f"unknown engine {name!r}; expected claude-cli, anthropic, openai or local. "
         "Nothing is defaulted here on purpose: a typo would silently change every model call."
     )
+
+
+def build_local_engine(config: HarnessConfig, *, model: str | None = None) -> Engine:
+    """A vLLM engine for one served model, with its window taken from the registry.
+
+    The window is passed in rather than discovered per call because the *point* of L6 is to
+    refuse an oversized prompt before it reaches the wire. An engine that learns its window from
+    the first rejection has already paid for the round trip it exists to avoid.
+    """
+    from ai_harness.llm.engines.vllm import VLLMEngine
+    from ai_harness.llm.serving.models import RegistryError, load_registry
+
+    try:
+        registry = load_registry(root=config.repo_path)
+        plan = registry.plan(model or config.roster.implementer_model)
+    except RegistryError as exc:
+        raise WiringError(
+            f"the local engine needs a model registry: {exc}\n"
+            "Refusing at startup: a worker that discovers this after claiming has already spent "
+            "a dispatch and a lease."
+        ) from exc
+    return VLLMEngine(base_url=plan.base_url, max_model_len=plan.max_model_len)
 
 
 def build_forge(config: HarnessConfig) -> Forge | None:
