@@ -157,13 +157,18 @@ class ShellGateAdapter:
             duration = row.get("duration_s")
             duration_f = float(duration) if duration is not None else None
             gate_time += duration_f or 0.0
+            status = _STATUS_MAP.get(str(row.get("status", "")).lower(), GateStatus.ERROR)
             results.append(
                 GateResult(
                     name=name,
-                    raw_status=_STATUS_MAP.get(
-                        str(row.get("status", "")).lower(), GateStatus.ERROR
-                    ),
-                    required=name in required,
+                    raw_status=status,
+                    # A spine that reports `fail` has already applied its OWN requiredness — it
+                    # is the repository's contract, and this harness's tier table is a
+                    # transcription of a *different* repository's spine. Where they disagree the
+                    # repository wins, and it may only ever add requirements: demoting a gate the
+                    # spine failed produced "RESULT: all required gates pass" on a report whose
+                    # own reason line read "REQUIRED for tier 'launch' but unavailable".
+                    required=name in required or status is GateStatus.FAIL,
                     selection=selection.get(name, GateSelection.RAN),
                     reason=str(row.get("reason", "")),
                     duration_s=duration_f,

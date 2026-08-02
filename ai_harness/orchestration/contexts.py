@@ -307,6 +307,39 @@ class ContextBuilder:
             run_spend=run.spend_view(),
         )
 
+    async def _evidence(self, run: Run, report: GateReport | None) -> str:
+        """The MR body (§19.6) — how a human audits an autonomous change in ten seconds.
+
+        Rendered here because this is the only place that holds all of it: the report and the
+        verdict come from the ledger, the spend from the run, the isolation from what PREPARE
+        actually *probed* rather than what the policy asked for, and the models from the roster.
+
+        Empty when there is no report, which cannot happen on the path that opens an MR —
+        INTEGRATE refuses first. It is written defensively anyway: an MR body is the artefact a
+        human reads instead of the logs, and one that silently degrades to blank teaches people
+        the block is decorative.
+        """
+        if report is None:
+            return ""
+        from ai_harness.observability.reports import EvidenceBlock
+
+        prepared = await self._last_payload(run, State.PREPARE)
+        reviewed = await self._last_payload(run, State.REVIEW)
+        return EvidenceBlock(
+            run_id=run.run_id,
+            report=report,
+            review=await self._review(run),
+            spend_usd=run.spend_usd,
+            models={
+                "implementer": self.config.roster.implementer_model,
+                "reviewer": self.config.roster.reviewer_model,
+            },
+            # What was obtained, not what was requested. A run that degraded to no sandbox says
+            # so on the MR, because it changes what the rest of the evidence is worth.
+            isolation=str(prepared.get("isolation") or ""),
+            diff_complete=bool(reviewed.get("diff_complete", True)),
+        ).render()
+
     async def integrate(self, run: Run) -> IntegrateContext:
         issue = await self._issue(run)
         profile = self._profile(run)
@@ -326,6 +359,7 @@ class ContextBuilder:
             review=await self._review(run),
             generated_paths=tuple(profile.generated_paths),
             resolver_attempts=run.counters.resolver_attempts,
+            evidence=await self._evidence(run, report),
             # `FF_ONLY` is refused unless the gates were DECLARED rather than inferred, and this
             # is where that fact reaches the decision (§19.2 rung 3/4 mark `discovered`).
             gates_were_discovered=bool(report and not report.profile_discovered)

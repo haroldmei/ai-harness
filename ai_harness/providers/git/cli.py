@@ -187,14 +187,28 @@ class GitCLI:
             )
         )
 
-    async def has_conflict_markers(self, *, cwd: Path | None = None) -> Outcome[list[str]]:
-        """Scan the *tree* for markers.
+    async def has_conflict_markers(
+        self, *, cwd: Path | None = None, paths: list[str] | None = None
+    ) -> Outcome[list[str]]:
+        """Scan for markers — the whole tree, or just ``paths``.
 
         Invariant 18: never trust a resolver's verdict string. The shell fast-forwarded ``main``
         onto a tree full of markers while logging "MERGED", because three ``log`` calls missing
         their ``1>&2`` corrupted the verdict travelling on stdout. The tree is the evidence.
+
+        ``paths`` narrows that evidence to the files a run actually changed, and the distinction
+        matters in any repository that keeps a *fixture* containing marker strings — this one
+        blocked on ``scripts/agent-triage-failure.test.sh``, a test whose subject is conflict
+        handling. Markers in files the run never touched are the repository's own business; the
+        invariant is that markers must not become *this commit*, and a scan that cannot be
+        narrowed makes such a repository permanently un-integratable.
         """
-        outcome = await self.run("ls-files", "-z", cwd=cwd)
+        if paths is not None:
+            if not paths:
+                return Outcome.ok([])
+            outcome = await self.run("ls-files", "-z", "--", *paths, cwd=cwd)
+        else:
+            outcome = await self.run("ls-files", "-z", cwd=cwd)
         if outcome.is_err:
             return Outcome.of(outcome.error) if outcome.error else Outcome.ok([])
         base = cwd or self.root

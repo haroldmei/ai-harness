@@ -90,7 +90,8 @@ class IntegrateSubgraph:
         # Defence in depth: markers already in the tree make the rebase fail with a confusing
         # "index contains uncommitted changes", which buries the actual problem. Scanning first
         # costs one `ls-files` and names it.
-        arrived_with = await self.git.has_conflict_markers(cwd=ctx.workspace)
+        changed = await self._changed_paths(ctx)
+        arrived_with = await self.git.has_conflict_markers(cwd=ctx.workspace, paths=changed)
         if arrived_with.is_ok and arrived_with.unwrap():
             return Outcome.fail(
                 ErrorCategory.NEEDS_HUMAN,
@@ -104,7 +105,9 @@ class IntegrateSubgraph:
         if rebased is not None:
             return rebased
 
-        markers = await self.git.has_conflict_markers(cwd=ctx.workspace)
+        markers = await self.git.has_conflict_markers(
+            cwd=ctx.workspace, paths=await self._changed_paths(ctx)
+        )
         if markers.is_ok and markers.unwrap():
             # The last line of defence, and the one that has actually saved a `main`.
             return Outcome.fail(
@@ -155,6 +158,26 @@ class IntegrateSubgraph:
             )
 
         return await self._fast_forward(ctx, mr, key)
+
+    async def _changed_paths(self, ctx: IntegrateContext) -> list[str] | None:
+        """The files this branch touches. ``None`` — scan everything — when we cannot tell.
+
+        Narrowing is a safety *improvement* only while it is accurate: if the diff cannot be
+        computed, the honest fallback is the whole tree, because a missed marker is the failure
+        this scan exists to prevent.
+        """
+        if not ctx.base_sha:
+            return None
+        listed = await self.git.run(
+            "diff", "--name-only", f"{ctx.base_sha}...HEAD", cwd=ctx.workspace
+        )
+        if listed.is_err:
+            return None
+        changed = [line for line in listed.unwrap().stdout.splitlines() if line.strip()]
+        # Empty means "fall back to the whole tree", never "scan nothing". An empty answer is
+        # ambiguous — a branch that changed nothing looks identical to a diff we could not
+        # compute — and only one of those two readings is safe.
+        return changed or None
 
     async def _rebase(self, ctx: IntegrateContext) -> Outcome[SubgraphResult] | None:
         """Rebase onto the live base. ``None`` means it is clean and we may proceed."""
