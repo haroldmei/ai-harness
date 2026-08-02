@@ -79,7 +79,29 @@ async def call_structured[TModel: BaseModel](
 
         completion = outcome.unwrap()
         last_text = completion.text
+        truncated = bool(completion.raw.get("truncated"))
         extraction = extract_object(completion.text)
+
+        if truncated and not extraction.found:
+            # The answer did not FIT. That is a different fact from "the model emitted garbage",
+            # and repairing it re-runs the same impossible generation: a whole-file edit to a
+            # 60 KB file cannot be expressed in a 16k-token budget, so the second attempt is cut
+            # in the same place as the first and the run escalates having learned nothing.
+            #
+            # Reported as its own outcome so a human reads "the output was cut off" rather than
+            # "did not satisfy its schema" — which sends them to the schema, which is fine.
+            return Outcome.fail(
+                ErrorCategory.MODEL_FAILURE,
+                f"the model's output was cut off at the token limit before a complete "
+                f"{model_type.__name__} was produced",
+                remedy=(
+                    "ask for a smaller answer rather than the same one again — an anchored edit "
+                    "instead of a whole file — or raise the call's max_tokens if the answer is "
+                    "genuinely that large"
+                ),
+                evidence=artefact_id("llm-output", last_text.encode("utf-8", "replace")),
+                details={"output_bytes": len(last_text), "repairs": repairs},
+            )
 
         if not extraction.found:
             last_problem = (

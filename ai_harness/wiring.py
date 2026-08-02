@@ -394,7 +394,18 @@ def _files_named_by(plan: Any, workspace: Path) -> dict[str, str]:
     for change in getattr(plan, "changes", []):
         target = workspace / str(getattr(change, "path", ""))
         try:
-            if target.is_file() and target.stat().st_size <= MAX_BRIEF_FILE_BYTES:
+            if target.is_file() and target.stat().st_size > MAX_BRIEF_FILE_BYTES:
+                # Said out loud. Dropping it silently asks the model to edit a file it cannot
+                # see, and the resulting invented edit looks exactly like a careless one.
+                Logger().warning(
+                    "a file the plan names is too large for the brief and was not shown",
+                    path=str(change.path),
+                    bytes=target.stat().st_size,
+                    limit=MAX_BRIEF_FILE_BYTES,
+                    effect="the implementer must anchor into a file it has not been shown",
+                )
+                continue
+            if target.is_file():
                 files[str(change.path)] = target.read_text()
         except OSError:
             # A path the plan invented does not exist yet — that is a *create*, and an absent

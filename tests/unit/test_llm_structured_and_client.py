@@ -260,3 +260,30 @@ async def test_a_failed_call_still_emits_a_span_with_its_category() -> None:
     result = await client.complete(_request(), run=_run(FrozenClock()))
     assert result.is_err
     assert sink.spans[0].outcome == ErrorCategory.UNKNOWN.value
+
+
+async def test_a_truncated_answer_is_not_repaired_into_the_same_wall():
+    """A 60 KB whole-file edit cannot fit a 16k budget, and asking twice does not change that."""
+    from ai_harness.llm.engines.fake_vllm import FakeVLLM, Fault
+    from ai_harness.llm.engines.vllm import VLLMEngine
+    from ai_harness.llm.structured import call_structured
+    from ai_harness.schemas.review import ReviewResult
+
+    server = FakeVLLM(faults=[Fault.TRUNCATED, Fault.TRUNCATED, Fault.TRUNCATED], text='{"verd')
+    engine = VLLMEngine(base_url="http://127.0.0.1:8000/v1", client=server.client())
+
+    outcome = await call_structured(
+        engine,
+        LLMRequest(prompt="edit it", model="qwen3-coder-30b", template_id="implementer-v2"),
+        ReviewResult,
+    )
+
+    assert outcome.is_err
+    error = outcome.error
+    assert error is not None
+    # MODEL_FAILURE, not VALIDATION: the schema is fine and the answer was cut off. The remedy
+    # has to name the size, or a human goes and reads the schema.
+    assert error.category is ErrorCategory.MODEL_FAILURE
+    assert "cut off" in error.message
+    # One call, not three: the repair loop must not re-run a generation that cannot fit.
+    assert len(server.requests) == 1

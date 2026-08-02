@@ -112,11 +112,27 @@ def build_prompt(
     # Trusted, because it is an instruction. The file *contents* below are untrusted and stay
     # that way; a directive derived from their size is ours.
     restate = [path for path, body in brief.current_files.items() if prefers_whole_file(body)]
+    anchor_only = [
+        path for path, body in brief.current_files.items() if not prefers_whole_file(body)
+    ]
     if restate:
         prompt.add_trusted(
             Trusted(
                 "Restate these files in FULL (whole-file content, no anchor) — they are small "
                 "enough that an anchor saves nothing: " + ", ".join(sorted(restate))
+            )
+        )
+    if anchor_only:
+        # The half that actually mattered. `FileEdit` is a whole-file write and its own docstring
+        # argues for it, so with no instruction the model restates — and restating a 60 KB file
+        # needs more output tokens than the call is allowed, so the answer is cut off mid-JSON
+        # and two repairs re-run the identical impossible generation. Everything between the
+        # 40-line threshold and the largest file in the repository lives here.
+        prompt.add_trusted(
+            Trusted(
+                "Use anchored_edits for these files and do NOT restate them in full — they are "
+                "too large to fit in one answer, and a truncated answer is a failed round: "
+                + ", ".join(sorted(anchor_only))
             )
         )
 
