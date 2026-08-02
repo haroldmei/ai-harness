@@ -166,6 +166,11 @@ def _result(
         payload={
             "idempotency_key": key,
             "verdict": verdict.verdict.value,
+            # The whole verdict, not just its headline. INTEGRATE runs in a later dispatch and
+            # possibly on another host, and `may_enable_ff_only` asks whether *this* head commit
+            # carries an approving review — a question the summary fields cannot answer. VALIDATE
+            # already records its full report for the same reason.
+            "review": verdict.model_dump(mode="json"),
             "downgraded": verdict.downgraded,
             "downgrade_reason": verdict.downgrade_reason,
             "findings": [

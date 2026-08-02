@@ -134,6 +134,14 @@ def tick(
             )
             raise typer.Exit(EXIT_CONFIG)
 
+        # The sweeper is passed, not defaulted to None. COMPLETE is terminal and its subgraph
+        # never executes, so nothing else reaps a preserved worktree — an escalated run leaves
+        # its tree behind *on purpose* (§16.4: evidence first), and without a sweeper "on
+        # purpose" becomes "for ever".
+        from ai_harness.orchestration.contexts import WORKTREE_ROOT
+        from ai_harness.providers.git.cli import GitCLI
+        from ai_harness.workspace.cleanup import WorktreeSweeper
+
         ticker = Ticker(
             deps=harness.deps,
             reconciler=Reconciler(
@@ -142,6 +150,13 @@ def tick(
                 leases=harness.deps.leases,
                 clock=harness.deps.clock,
             ),
+            sweeper=WorktreeSweeper(
+                root=WORKTREE_ROOT,
+                git=GitCLI(root=harness.config.repo_path),
+                ttl_hours=harness.config.policy.failure.preserve_worktree_ttl_h,
+                clock=harness.deps.clock,
+            ),
+            max_open_runs=harness.config.bounds.pipeline_max_open_prs,
             clock=harness.deps.clock,
         )
         report = asyncio.run(ticker.tick(target))

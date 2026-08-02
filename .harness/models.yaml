@@ -93,3 +93,9 @@ models:
     cap_max_model_len: 32768
     port: 8001
     roles: [reviewer, conflict_resolver]
+    # Same flag as the implementer, different reason. CUDA graph capture allocates pinned host
+    # memory, and under WSL2 that fails at initialisation:
+    #     RuntimeError: UVA is not available
+    # — with 22.5 GB free and nothing else resident, so it is not a memory problem and not a
+    # swap race. Every model on this host needs it; a bare-metal box may not.
+    extra_args: ["--enforce-eager"]

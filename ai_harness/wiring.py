@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ai_harness.agents.planner import Planner
 from ai_harness.agents.reviewer import Reviewer
@@ -39,10 +40,12 @@ from ai_harness.config import HarnessConfig
 from ai_harness.kernel.budget import CircuitBreaker, CostTracker
 from ai_harness.kernel.clock import Clock, SystemClock
 from ai_harness.kernel.lease import FlockLeaseBackend, LeaseBackend, LeaseManager
+from ai_harness.kernel.outcome import Outcome
 from ai_harness.llm.client import LLMClient
 from ai_harness.llm.engines.protocol import Engine
 from ai_harness.llm.pacing import GpuTime
 from ai_harness.observability.logging import Logger
+from ai_harness.orchestration.contexts import ContextBuilder
 from ai_harness.orchestration.machine import Deps
 from ai_harness.orchestration.registry import Registry
 from ai_harness.persistence.leases import SqlLeaseBackend
@@ -56,6 +59,7 @@ from ai_harness.schemas.enums import State, Tier
 from ai_harness.subgraphs.analyse import AnalyseSubgraph
 from ai_harness.subgraphs.implement import ImplementSubgraph
 from ai_harness.subgraphs.integrate import IntegrateSubgraph
+from ai_harness.subgraphs.prepare import PrepareSubgraph
 from ai_harness.subgraphs.review import ReviewSubgraph
 from ai_harness.subgraphs.validate import ValidateSubgraph
 
@@ -88,7 +92,9 @@ class Harness:
 # ── the pieces ───────────────────────────────────────────────────────────────────
 
 
-def build_engine(config: HarnessConfig, *, logger: Logger | None = None) -> Engine:
+def build_engine(
+    config: HarnessConfig, *, logger: Logger | None = None, slot: Any = None
+) -> Engine:
     """One engine, chosen by name. An unknown name is a startup error, not a default.
 
     Defaulting here would mean a typo in ``roster.engine`` silently ran every model call
@@ -96,7 +102,7 @@ def build_engine(config: HarnessConfig, *, logger: Logger | None = None) -> Engi
     defaulting to the weakest gate set.
     """
     if config.roster.engines:
-        return build_router(config, logger=logger)
+        return build_router(config, logger=logger, slot=slot)
     name = config.roster.engine
     if name == "claude-cli":
         from ai_harness.llm.engines.claude_cli import ClaudeCLIEngine
@@ -133,7 +139,9 @@ def roster_models(config: HarnessConfig) -> dict[Role, str]:
     }
 
 
-def build_router(config: HarnessConfig, *, logger: Logger | None = None) -> Engine:
+def build_router(
+    config: HarnessConfig, *, logger: Logger | None = None, slot: Any = None
+) -> Engine:
     """One engine per model — the shape a local roster actually has.
 
     Every model the roster names must be routable *before* anything is claimed. The alternative
@@ -155,9 +163,15 @@ def build_router(config: HarnessConfig, *, logger: Logger | None = None) -> Engi
         )
     routes: dict[str, Engine] = {}
     for model in sorted(named):
-        routes[model] = _engine_named(
-            config.roster.engines[model], config, model=model, logger=logger
-        )
+        engine = _engine_named(config.roster.engines[model], config, model=model, logger=logger)
+        if slot is not None and config.roster.engines[model] in ("local", "vllm"):
+            # Wrapping rather than asking. An admission rule the caller must remember is one
+            # that stops holding the first time somebody adds a call site — and here the rule is
+            # "you may not generate on a card another model is resident on".
+            from ai_harness.llm.pacing import SerialEngine
+
+            engine = SerialEngine(inner=engine, slot=slot)
+        routes[model] = engine
 
     fallbacks: dict[str, Engine] = {}
     if config.roster.fallback_engine:
@@ -201,6 +215,72 @@ def probe_cache_path(config: HarnessConfig) -> Path:
     if not state.is_absolute():
         state = config.repo_path / state
     return state / "probe-cache.json"
+
+
+def build_slot(
+    config: HarnessConfig,
+    *,
+    leases: LeaseManager,
+    logger: Logger | None = None,
+) -> Any:
+    """The card's owner, or ``None`` when only one local model is ever resident.
+
+    L2 in code rather than in prose: 24 GB holds one 4-bit 30B *or* one 4-bit 24B, and the roster
+    demands two because ``reviewer != implementer`` is a refusal. Something therefore has to
+    evict one before loading the other, wait for the new one to answer, and bill the swap to the
+    run that caused it.
+
+    :class:`~ai_harness.llm.serving.residency.ModelSlot` does all of that and has since Phase 7 —
+    nothing constructed it, so a run that reached REVIEW found the reviewer's server simply down
+    and failed against a dependency that was never coming back on its own. This is the third
+    module in this package to be finished, tested and unwired; the composition root is where that
+    stops being possible.
+
+    ``None`` when the roster names at most one local model: a slot that never swaps is pure
+    overhead, and the lease it takes would be one more thing to expire mid-generation.
+    """
+    from ai_harness.deploy.units import serving_unit_name
+    from ai_harness.llm.serving.health import HealthClient
+    from ai_harness.llm.serving.models import ModelSpec, RegistryError, load_registry
+    from ai_harness.llm.serving.residency import ModelSlot, ResidencyPolicy, SystemdUnits
+
+    local = {
+        model
+        for model, engine in config.roster.engines.items()
+        if engine in ("local", "vllm") and model
+    }
+    if len(local) < 2:
+        return None
+
+    try:
+        registry = load_registry(root=config.repo_path)
+    except RegistryError as exc:
+        raise WiringError(
+            f"a multi-model local roster needs a model registry: {exc}\n"
+            "Refusing at startup: the alternative is discovering at REVIEW that the reviewer's "
+            "model was never servable, which costs a claim and a lease."
+        ) from exc
+
+    unservable = sorted(local - {spec.name for spec in registry.models})
+    if unservable:
+        raise WiringError(
+            f"the roster routes {', '.join(unservable)} to the local engine, but the registry "
+            "does not serve them. A model the card cannot hold is a run that escalates at the "
+            "state that needed it."
+        )
+
+    def _health(spec: ModelSpec) -> HealthClient:
+        return HealthClient(base_url=spec.plan(registry.gpu).base_url)
+
+    return ModelSlot(
+        registry=registry,
+        leases=leases,
+        units=SystemdUnits(),
+        unit_name=serving_unit_name,
+        health=_health,
+        policy=ResidencyPolicy(),
+        logger=logger or Logger(),
+    )
 
 
 def build_local_engine(
@@ -254,6 +334,86 @@ def build_local_engine(
     return engine
 
 
+MAX_BRIEF_FILE_BYTES = 60_000
+"""One file the plan names, at most. A generated bundle pasted whole would spend the window the
+edit itself needs, and the anchored-edit path exists precisely so whole files need not travel."""
+
+
+def _files_named_by(plan: Any, workspace: Path) -> dict[str, str]:
+    """Current contents of the files the plan intends to change.
+
+    The model cannot produce an anchored edit against a file it has not seen, and it must not
+    guess: an anchor that does not match exactly is refused by :mod:`ai_harness.agents.edits`,
+    which turns a hallucinated context line into a wasted round rather than a wrong patch.
+    """
+    if plan is None:
+        return {}
+    files: dict[str, str] = {}
+    for change in getattr(plan, "changes", []):
+        target = workspace / str(getattr(change, "path", ""))
+        try:
+            if target.is_file() and target.stat().st_size <= MAX_BRIEF_FILE_BYTES:
+                files[str(change.path)] = target.read_text()
+        except OSError:
+            # A path the plan invented does not exist yet — that is a *create*, and an absent
+            # file is the correct evidence for one.
+            continue
+    return files
+
+
+def build_editor(
+    config: HarnessConfig,
+    *,
+    client: LLMClient,
+    model: str,
+) -> Any:
+    """The callable ``ImplementSubgraph.editor`` expects: ``async (ctx) -> Outcome[None]``.
+
+    Built as a *factory over the context* rather than bound once, because the broker and the
+    implementer both need the run's own worktree — and that path is not known until a run is in
+    flight. Binding one implementer at startup would mean every run edited the first run's tree.
+
+    Without this the state is inert: ``ImplementSubgraph`` checks whether HEAD moved, finds it
+    did not, and returns ``REPLAN`` — a run that loops through its attempt cap and escalates
+    having written nothing, which reads as "the model refused" and is "nobody asked it".
+    """
+    from ai_harness.agents.implementer import Implementer, ImplementerBrief, filesystem_handlers
+    from ai_harness.policies.engine import PolicyEngine
+    from ai_harness.tools.broker import ToolBroker
+
+    async def _edit(ctx: Any) -> Outcome[None]:
+        workspace = Path(ctx.workspace)
+        broker = ToolBroker(
+            policy=PolicyEngine(
+                policy=config.policy, protected_paths=list(ctx.protected_paths or ())
+            ),
+            workspace=workspace,
+            run_id=ctx.run_id,
+            state="IMPLEMENT",
+            handlers=dict(filesystem_handlers(workspace)),  # type: ignore[arg-type]
+        )
+        implementer = Implementer(
+            client=client,
+            model=model,
+            broker=broker,
+            workspace=workspace,
+            repo=ctx.repo,
+        )
+        brief = ImplementerBrief(
+            plan=ctx.plan,
+            brief=ctx.brief,
+            issue_title=ctx.issue_title,
+            issue_body=ctx.issue_body,
+            issue_number=ctx.issue_number,
+            findings=tuple(ctx.findings),
+            gate_failure=ctx.gate_failure,
+            current_files=_files_named_by(ctx.plan, workspace),
+        )
+        return await implementer.editor(brief, run=getattr(ctx, "run_spend", None))(ctx)  # type: ignore[no-any-return]
+
+    return _edit
+
+
 def build_forge(config: HarnessConfig) -> Forge | None:
     """The forge, or ``None`` when no token is configured.
 
@@ -296,13 +456,35 @@ def build_registry(
     roster: AgentRoster,
     forge: Forge | None,
     logger: Logger,
+    leases: LeaseManager | None = None,
 ) -> tuple[Registry, tuple[State, ...]]:
     """Bind the states, and report the ones deliberately left unbound."""
+    from ai_harness.workspace.generated import ConflictPolicy
+    from ai_harness.workspace.worktree import WorktreeManager
+
     registry = Registry()
     unbound: list[State] = []
 
     git = GitCLI(root=config.repo_path)
     triager = Triager()
+
+    if leases is not None:
+        registry.bind(
+            State.PREPARE,
+            PrepareSubgraph(
+                worktrees=WorktreeManager(
+                    git=git,
+                    leases=leases,
+                    repo_key=config.profile.name or str(config.repo_path),
+                    conflicts=ConflictPolicy(generated_paths=list(config.profile.generated_paths)),
+                )
+            ),
+        )
+    else:
+        # Only reachable from a caller that assembled Deps by hand. Left unbound rather than
+        # given a lease-less manager: two workers materialising one worktree race on the shared
+        # .git/worktrees area, and the lock is the thing that makes that safe.
+        unbound.append(State.PREPARE)
 
     registry.bind(
         State.ANALYSE,
@@ -310,7 +492,13 @@ def build_registry(
             planner=Planner(client=client, model=roster.model_for(Role.PLANNER)), triager=triager
         ),
     )
-    registry.bind(State.IMPLEMENT, ImplementSubgraph(git=git))
+    registry.bind(
+        State.IMPLEMENT,
+        ImplementSubgraph(
+            git=git,
+            editor=build_editor(config, client=client, model=roster.model_for(Role.IMPLEMENTER)),
+        ),
+    )
     registry.bind(
         State.REVIEW,
         ReviewSubgraph(reviewer=Reviewer(client=client, model=roster.model_for(Role.REVIEWER))),
@@ -362,10 +550,16 @@ def build_deps(
 
     roster = AgentRoster(models=roster_models(config))
 
+    # Leases first: the GPU slot is a lease-holder, and the engine that respects it cannot be
+    # built before the thing it holds. The previous order made a residency-aware engine
+    # impossible to express, which is one reason it was never wired.
+    leases = LeaseManager(build_leases(config, store, clock), clock=clock)
+    slot = build_slot(config, leases=leases, logger=logger)
+
     tracker = CostTracker(clock=clock)
     breaker = CircuitBreaker(config.policy.budget, tracker, clock=clock)
     client = LLMClient(
-        engine=engine or build_engine(config, logger=logger),
+        engine=engine or build_engine(config, logger=logger, slot=slot),
         tracker=tracker,
         breaker=breaker,
         clock=clock,
@@ -374,19 +568,25 @@ def build_deps(
     resolved_forge = forge if forge is not None else build_forge(config)
 
     registry, unbound = build_registry(
-        config, client=client, roster=roster, forge=resolved_forge, logger=logger
+        config, client=client, roster=roster, forge=resolved_forge, logger=logger, leases=leases
     )
 
     deps = Deps(
         store=store,
         registry=registry,
-        leases=LeaseManager(build_leases(config, store, clock), clock=clock),
+        leases=leases,
         breaker=breaker,
         clock=clock,
         logger=logger,
         lease_ttl_s=lease_ttl_for(config),
         gpu_time=GpuTime(clock=clock),
         blocker_is_closed=resolved_forge.blocker_closed if resolved_forge is not None else None,
+        context_builder=ContextBuilder(
+            config=config,
+            store=store,
+            git=GitCLI(root=config.repo_path),
+            forge=resolved_forge,
+        ),
     )
     return deps, unbound, resolved_forge
 

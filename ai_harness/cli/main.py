@@ -25,6 +25,7 @@ import typer
 from ai_harness.cli.commands.doctor import doctor_app
 from ai_harness.cli.commands.drive import drive_app
 from ai_harness.cli.commands.install import install_app
+from ai_harness.cli.commands.intake import intake_app
 from ai_harness.cli.commands.product import iteration_app, product_app
 from ai_harness.cli.commands.serving import serving_app
 from ai_harness.cli.commands.shadow import shadow_app
@@ -63,6 +64,9 @@ app.command("record")(record)
 # rollback for Phases 2-5, and it is worth nothing if an entry point can route around it.
 app.registered_commands.extend(drive_app.registered_commands)
 app.registered_commands.extend(install_app.registered_commands)
+# The queue had no producer: nothing in the package created a run, so a cut-over repository
+# could not be given work at all.
+app.registered_commands.extend(intake_app.registered_commands)
 for _name in ("ls", "inspect", "cost", "replay"):
     app.registered_commands.extend([c for c in state_app.registered_commands if c.name == _name])
 

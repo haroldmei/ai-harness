@@ -30,6 +30,7 @@ from ai_harness.kernel.ids import idempotency_key
 from ai_harness.kernel.outcome import ErrorCategory, Outcome
 from ai_harness.providers.git.protocol import DiffStat, GitClient
 from ai_harness.schemas.enums import Brief, Signal
+from ai_harness.schemas.plan import WorkPlan
 from ai_harness.subgraphs.base import SubgraphResult
 
 DEFAULT_MAX_FILES = 40
@@ -56,6 +57,18 @@ class ImplementContext:
     remote: str = "origin"
     may_push: bool = True
     empty_streak: int = 0
+
+    # What the editor needs to write anything at all. Carried on the context rather than fetched
+    # by the editor, because a state that reaches for the forge mid-edit is a state whose cost
+    # and failure modes are no longer its own.
+    plan: WorkPlan | None = None
+    issue_title: str = ""
+    issue_body: str = ""
+    issue_number: int | None = None
+    findings: tuple[str, ...] = ()
+    """Blocking review findings, when this is a FIX brief."""
+    gate_failure: str = ""
+    """The diagnostic line, when this is a REPAIR brief."""
 
 
 @dataclass

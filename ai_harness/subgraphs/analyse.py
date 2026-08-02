@@ -193,6 +193,10 @@ class AnalyseSubgraph:
             "summary": plan.summary,
             "risk": plan.risk.value,
             "files": [c.path for c in plan.changes],
+            # The whole plan, because IMPLEMENT runs in a later dispatch and cannot be handed a
+            # summary and asked to build from it. The ledger is the only thing that crosses a
+            # state boundary, so what the next state needs has to be *in* it.
+            "plan": plan.model_dump(mode="json"),
             "reused": reused,
         }
 
