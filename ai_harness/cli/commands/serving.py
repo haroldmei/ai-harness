@@ -23,7 +23,7 @@ from typing import Annotated
 
 import typer
 
-from ai_harness.deploy.units import render_serving, serving_unit_name
+from ai_harness.deploy.units import render_serving, resolve_binary, serving_unit_name
 from ai_harness.llm.serving.bench import DEFAULT_PROMPT_SIZES, measure
 from ai_harness.llm.serving.health import HealthClient
 from ai_harness.llm.serving.models import ModelRegistry, RegistryError, load_registry
@@ -105,7 +105,8 @@ def serving_args(
     if explain:
         for line in plan.workings:
             typer.echo(f"# {line}")
-    typer.echo(" ".join(plan.argv()))
+    binary = resolve_binary(registry.vllm_bin, root=path) or registry.vllm_bin
+    typer.echo(" ".join(plan.argv(binary=binary)))
 
 
 @serving_app.command("unit")
@@ -123,7 +124,25 @@ def serving_unit(
         raise typer.Exit(EXIT_CONFIG) from exc
 
     others = tuple(spec.name for spec in registry.models if spec.name != model)
-    name, service = render_serving(plan, working_dir=str(path.resolve()), conflicts=others)
+    binary = resolve_binary(registry.vllm_bin, root=path)
+    if binary is None:
+        # Rendered anyway — an operator may legitimately be preparing a unit for another box.
+        # But said out loud, because the alternative is a unit that fails 203/EXEC and a journal
+        # line that reads as though the model were at fault.
+        typer.secho(
+            f"warning: {registry.vllm_bin!r} is not on PATH and is not a file under "
+            f"{path.resolve()}. A systemd *user* unit does not inherit conda or a virtualenv, so "
+            "this unit will fail with 203/EXEC. Set `vllm_bin` in the registry to the path of "
+            "the vLLM you installed.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    name, service = render_serving(
+        plan,
+        working_dir=str(path.resolve()),
+        vllm_bin=binary or registry.vllm_bin,
+        conflicts=others,
+    )
     typer.echo(f"# {name}.service")
     typer.echo(service)
 

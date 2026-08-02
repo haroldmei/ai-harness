@@ -966,6 +966,31 @@ The consequences you will meet as an operator:
   be a model swap plus several minutes of generation, and a lease that expires mid-generation is a
   lost run.
 
+### Where the weights live, and where vLLM does
+
+The harness stores **pins, not weights**. `.harness/models.yaml` names a `repo_id` and a
+`revision` digest; `ServingPlan.argv()` hands both to vLLM; and the files themselves sit in the
+HuggingFace Hub cache — `$HF_HUB_CACHE`, else `$HF_HOME/hub`, else
+`~/.cache/huggingface/hub/models--<org>--<name>/snapshots/<revision>/`.
+
+The serving unit sets `HF_HUB_OFFLINE=1`, so **it cannot fetch them itself**, by design: *a start
+that would download something is a start nobody reviewed.* Weights are fetched out of band and
+the unit only ever serves what is already cached:
+
+```bash
+hf download <repo_id> --revision <the digest in models.yaml>
+```
+
+`vllm_bin` in the same file says which vLLM to serve with. A bare name is resolved against `PATH`;
+a relative path is resolved against the repository root, the way `.harness/gates.yaml` names
+`.venv/bin/ruff`. This is configuration rather than a constant because a systemd **user** unit's
+`PATH` is `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` — no conda, no
+virtualenv — so a bare `vllm` that works in your shell fails the unit with `203/EXEC`, which
+reads as "the model is broken" and is not.
+
+Keeping vLLM in its own virtualenv (`.venv-vllm`) is worth doing: it pulls torch and a few
+gigabytes of CUDA wheels, and the harness's own gates run out of `.venv`.
+
 ### Before anything
 
 ```bash
@@ -973,22 +998,30 @@ The consequences you will meet as an operator:
 ```
 
 Read-only; it fixes nothing on purpose — a diagnostic that repairs things is a diagnostic people
-are afraid to run. Real output on a healthy box with nothing started:
+are afraid to run. Real output on a box with vLLM installed and no weights fetched yet:
 
 ```
-ok   gpu                          RTX 4090: 2% busy, 22.1 GB free, 35°C
+ok   gpu                          RTX 4090: 2% busy, 21.9 GB free, 42°C
+ok   vllm                         /home/you/repo/.venv-vllm/bin/vllm
 ok   thermals                     clocks are not being limited
+FAIL weights:qwen3-coder-30b      cyankiwi/…-AWQ-4bit@4bd30395b72e is not in /home/you/.cache/huggingface/hub
+     remedy: fetch it: `hf download cyankiwi/…-AWQ-4bit --revision 4bd30395b72e…`
 warn serving:qwen3-coder-30b      the serving endpoint exposed no metrics: All connection attempts failed
-     remedy: start it: `systemctl --user start ai-harness-serve-qwen3-coder-30b`
-ok   vram:qwen3-coder-30b         qwen3-coder-30b needs 19.0 GB; 22.1 GB free
+ok   vram:qwen3-coder-30b         qwen3-coder-30b needs 18.4 GB; 21.9 GB free
 ```
 
-| Check | Meaning | Action |
-|---|---|---|
-| `gpu` FAIL | no driver, or the card is invisible from this environment | install the NVIDIA driver; under WSL, check `nvidia-smi` in the same shell |
-| `thermals` warn | clocks are being limited | the box generates slower than every timeout was derived from — check airflow and the power limit, then re-run `bench` |
-| `serving:<m>` warn | that model's server is down | normal for the non-resident model. If *neither* is up, start one |
-| `vram:<m>` warn | not enough free memory | stop the other model's unit first |
+| Check | Fatal | Meaning | Action |
+|---|---|---|---|
+| `gpu` | yes | no driver, or the card is invisible from this environment | install the NVIDIA driver; under WSL, check `nvidia-smi` in the same shell |
+| `vllm` | yes | the configured `vllm_bin` is neither on `PATH` nor a file in the repository | install vLLM and point `vllm_bin` at it — this is the `203/EXEC` failure, caught before the start |
+| `weights:<m>` | yes | that revision is not in the Hub cache | run the `hf download` the remedy prints. The unit is offline and cannot fetch it |
+| `thermals` | no | clocks are being limited | the box generates slower than every timeout was derived from — check airflow and the power limit, then re-run `bench` |
+| `serving:<m>` | no | that model's server is down | normal for the non-resident model. If *neither* is up, start one |
+| `vram:<m>` | no | not enough free memory | stop the other model's unit first |
+
+The two fatal checks in the middle are the ones that decide whether `systemctl start` will
+survive its first second. Both were added after a start failed `203/EXEC` while `doctor` reported
+the box healthy.
 
 ### Starting the stack
 
@@ -1002,9 +1035,53 @@ systemctl --user start ai-harness-serve-qwen3-coder-30b
 .venv/bin/agent serving check qwen3-coder-30b
 ```
 
+`agent serving unit` writes an **absolute** `ExecStart`, resolved from `vllm_bin` on the box that
+rendered it, and puts that binary's directory on the unit's `PATH`. Both halves are needed: the
+absolute path satisfies systemd, and the `PATH` entry is what lets vLLM find the tools it shells
+out to by name — `ninja` first, when it compiles a kernel. An absolute `ExecStart` alone gets as
+far as loading the weights and then dies on `FileNotFoundError: 'ninja'`.
+
+If it cannot resolve a binary it still renders the unit — you may be preparing it for another
+host — but says so on stderr.
+
+### Calibrating the registry against the card
+
+`gpu.reserve_gb`, `activation_gb` and `cap_max_model_len` are *declared* numbers that the
+window is derived from, and the failure mode when they are optimistic is a server that starts,
+loads, and then refuses. Two of them cannot be guessed:
+
+* **`reserve_gb` is what is already on the card**, not a round number. `nvidia-smi` on an idle
+  WSL desktop here reports `24564 MiB total, 2128 MiB used` with *no* compute process holding it.
+  At `reserve_gb: 1.0` the derived `--gpu-memory-utilization` was 0.958 and vLLM refused —
+  it demands `free >= utilisation × total` at startup.
+* **`activation_gb` must include non-torch memory and CUDA graphs.** vLLM prints its own
+  accounting on every start, and it is the number to copy:
+
+  ```
+  Actual usage is 16.93 GiB for weight, 0.72 GiB for peak activation,
+  1.03 GiB for non-torch memory, and 0.0 GiB for CUDAGraph memory
+  Available KV cache memory: 2.91 GiB    GPU KV cache size: 63,472 tokens
+  ```
+
+CUDA graphs deserve their own note on a 24 GB card: capturing them costs ~2.3 GiB on this MoE,
+which is the difference between a **60k** window and an **11k** one. `extra_args:
+["--enforce-eager"]` buys the window back at the cost of some decode throughput — worth it for a
+model that reads repositories. Re-measure with `agent serving bench` before reversing it.
+
+A start that fails with `To serve at least one request … estimated maximum model length is 864`
+is this arithmetic being wrong, not the model being too big.
+
 `check` demands a **returned token**, not a bound port: vLLM accepts connections while still
 loading, and that window is long enough for a worker to claim a run against a model that cannot
 answer yet. It also refuses a server whose loaded revision is not the pinned one.
+
+> **`check` cannot pass against vLLM 0.26.** It reads the revision from `/v1/models`, trying
+> `revision`, `root_revision`, `model_revision` and `permission[0].revision`; vLLM 0.26 publishes
+> none of them — `root` carries the *repo id*, not the digest — so `check` reports *"the server
+> did not report a revision"* and exits 1 even when the server was started with `--revision`.
+> That is the harness's own rule (*"an unreported revision is not the same as a matching one"*)
+> meeting a server that never reports one. Until it is resolved, use `agent serving probe` to
+> confirm a server is up and answering; it exercises a real generation and checks the window.
 
 Nothing in `agent serving` starts or stops anything. Installing is `agent install`'s job, and the
 separation is deliberate: a command that both renders and starts is one people run before they
@@ -1100,6 +1177,9 @@ roster. Rehearse it before the soak, not after.
 | `agent install --enable` refuses | repository not cut over | install the units now, enable them after the shadow comparison closes |
 | `shadow observe` refuses: "the configured forge can write" | shadow needs a write-blocked client | the shell path owns the label during the comparison |
 | `serving check` says the revision does not match | the server loaded other weights | restart the unit against the pinned digest |
+| the serving unit dies instantly with `status=203/EXEC` | systemd could not exec the binary: vLLM absent, or `vllm_bin` is a bare name a **user** unit's minimal `PATH` cannot see | `agent doctor` — the `vllm` check names the resolved path or says there is none; set `vllm_bin` in `.harness/models.yaml` |
+| the unit starts, then exits while loading | the pinned revision is not in the Hub cache and `HF_HUB_OFFLINE=1` forbids fetching it | `agent doctor` — the `weights:<model>` check prints the exact `hf download` |
+| `hf download …: syntax error near unexpected token` | a `<placeholder>` was pasted literally; bash read `<` as a redirection | substitute the real digest from `models.yaml` |
 | Postgres tests skip | `HARNESS_TEST_POSTGRES_URL` unset | a skipped case proves nothing — set it |
 
 ---

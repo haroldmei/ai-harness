@@ -172,6 +172,14 @@ class ModelRegistry(BaseModel):
 
     gpu: GpuSpec = Field(default_factory=GpuSpec)
     models: list[ModelSpec] = Field(default_factory=list)
+    vllm_bin: str = "vllm"
+    """Which vLLM to serve with. A bare name is resolved against ``PATH``; a relative path is
+    resolved against the repository root, the way `.harness/gates.yaml` names `.venv/bin/ruff`.
+
+    It is configuration rather than a constant because the unit that runs it is a **systemd user
+    unit**, whose ``PATH`` is ``/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`` —
+    no conda, no virtualenv. A bare ``vllm`` that works in the operator's shell fails the unit
+    with ``203/EXEC``, which reads as "the model is broken" and is not."""
 
     @model_validator(mode="after")
     def _check(self) -> ModelRegistry:

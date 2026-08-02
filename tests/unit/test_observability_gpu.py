@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 
-from ai_harness.cli.commands.doctor import diagnose
+from ai_harness.cli.commands.doctor import diagnose, hub_cache_root
 from ai_harness.llm.serving.models import GpuSpec, ModelRegistry, ModelSpec
 from ai_harness.observability.gpu import (
     GpuReading,
@@ -138,9 +140,11 @@ def _down() -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-async def test_the_doctor_names_a_remedy_for_every_failure():
+async def test_the_doctor_names_a_remedy_for_every_failure(tmp_path):
     async with _down() as client:
-        diagnosis = await diagnose(ModelRegistry(gpu=GPU, models=[SPEC]), client=client)
+        diagnosis = await diagnose(
+            ModelRegistry(gpu=GPU, models=[SPEC]), client=client, hub_cache=tmp_path
+        )
 
     assert diagnosis.checks
     for check in diagnosis.checks:
@@ -150,12 +154,114 @@ async def test_the_doctor_names_a_remedy_for_every_failure():
             assert check.remedy, f"{check.name} failed without saying what to do"
 
 
-async def test_a_server_that_is_not_up_is_a_warning_and_not_a_dead_box():
+async def test_a_server_that_is_not_up_is_a_warning_and_not_a_dead_box(tmp_path):
     async with _down() as client:
-        diagnosis = await diagnose(ModelRegistry(gpu=GPU, models=[SPEC]), client=client)
+        diagnosis = await diagnose(
+            ModelRegistry(gpu=GPU, models=[SPEC]), client=client, hub_cache=tmp_path
+        )
     serving = next(c for c in diagnosis.checks if c.name.startswith("serving:"))
 
     assert serving.fatal is False
     # A model that is not currently resident is the *normal* state on a one-card box (L2), so it
     # must not read as "this host is broken".
-    assert diagnosis.healthy or not any(c.fatal and not c.ok for c in diagnosis.checks)
+    assert not any(c.fatal and not c.ok for c in diagnosis.checks if c.name.startswith("serving:"))
+
+
+# ── the two conditions that fail a start before the model is ever loaded ─────────
+#
+# Both were live on this host and neither was checked: `systemctl start` exited 203/EXEC in
+# under a second while `agent doctor` reported the box healthy. A preflight that misses the two
+# things that actually prevent a start is a preflight that has to be run twice — once, and then
+# again after reading the journal.
+
+
+def _snapshot(cache: Path, repo_id: str, revision: str) -> Path:
+    directory = cache / f"models--{repo_id.replace('/', '--')}" / "snapshots" / revision
+    directory.mkdir(parents=True)
+    (directory / "model.safetensors").write_text("weights")
+    return directory
+
+
+async def test_a_vllm_that_cannot_be_located_is_fatal_and_names_the_path_trap(tmp_path):
+    registry = ModelRegistry(gpu=GPU, models=[SPEC], vllm_bin="not-a-real-binary-anywhere")
+    async with _down() as client:
+        diagnosis = await diagnose(
+            registry, client=client, root=tmp_path, hub_cache=tmp_path / "hub"
+        )
+
+    check = next(c for c in diagnosis.checks if c.name == "vllm")
+    assert not check.ok and check.fatal
+    # The remedy has to name the *reason* a working shell command fails as a unit, or the
+    # operator installs vLLM, sees it on PATH, and gets 203/EXEC a second time.
+    assert "203/EXEC" in check.remedy
+    assert not diagnosis.healthy
+
+
+async def test_a_relative_vllm_is_resolved_against_the_repository_and_reported_absolute(tmp_path):
+    binary = tmp_path / ".venv-vllm" / "bin" / "vllm"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n")
+    registry = ModelRegistry(gpu=GPU, models=[SPEC], vllm_bin=".venv-vllm/bin/vllm")
+
+    async with _down() as client:
+        diagnosis = await diagnose(
+            registry, client=client, root=tmp_path, hub_cache=tmp_path / "hub"
+        )
+
+    check = next(c for c in diagnosis.checks if c.name == "vllm")
+    # Absolute, because that is what systemd requires of ExecStart — reporting the relative
+    # form would look correct and still render a unit that cannot start.
+    assert check.ok and check.detail == str(binary.resolve())
+
+
+async def test_unfetched_weights_are_a_failure_that_names_the_exact_download(tmp_path):
+    async with _down() as client:
+        diagnosis = await diagnose(
+            ModelRegistry(gpu=GPU, models=[SPEC]),
+            client=client,
+            root=tmp_path,
+            hub_cache=tmp_path / "hub",
+        )
+
+    check = next(c for c in diagnosis.checks if c.name == f"weights:{SPEC.name}")
+    assert not check.ok and check.fatal
+    # The full digest, not the abbreviation the detail line shows: the remedy is meant to be
+    # pasted, and `hf download --revision a2b3c4d5e6f7` fetches a different thing than the pin.
+    assert f"--revision {SPEC.revision}" in check.remedy
+    assert "HF_HUB_OFFLINE=1" in check.remedy
+
+
+async def test_weights_cached_under_the_full_sha_satisfy_a_shortened_pin(tmp_path):
+    cache = tmp_path / "hub"
+    _snapshot(cache, SPEC.repo_id, SPEC.revision)
+    short = SPEC.model_copy(update={"revision": SPEC.revision[:12]})
+
+    async with _down() as client:
+        diagnosis = await diagnose(
+            ModelRegistry(gpu=GPU, models=[short]), client=client, root=tmp_path, hub_cache=cache
+        )
+
+    check = next(c for c in diagnosis.checks if c.name == f"weights:{short.name}")
+    # `check_revision` accepts a short digest for the same commit, so the cache lookup must too —
+    # otherwise a pin an operator shortened by hand reads as "not downloaded".
+    assert check.ok
+
+
+async def test_an_empty_snapshot_directory_is_not_evidence_of_weights(tmp_path):
+    cache = tmp_path / "hub"
+    (cache / f"models--{SPEC.repo_id}" / "snapshots" / SPEC.revision).mkdir(parents=True)
+
+    async with _down() as client:
+        diagnosis = await diagnose(
+            ModelRegistry(gpu=GPU, models=[SPEC]), client=client, root=tmp_path, hub_cache=cache
+        )
+
+    # An interrupted download leaves the directory behind. "The folder exists" is the same class
+    # of evidence as "npm ci exited 0" — it is not the thing anyone meant to check.
+    assert not next(c for c in diagnosis.checks if c.name == f"weights:{SPEC.name}").ok
+
+
+def test_the_hub_cache_follows_the_hub_s_own_precedence(tmp_path):
+    assert hub_cache_root({"HF_HUB_CACHE": str(tmp_path / "explicit")}) == tmp_path / "explicit"
+    assert hub_cache_root({"HF_HOME": str(tmp_path / "home")}) == tmp_path / "home" / "hub"
+    assert hub_cache_root({"XDG_CACHE_HOME": str(tmp_path)}) == tmp_path / "huggingface" / "hub"

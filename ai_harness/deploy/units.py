@@ -28,7 +28,10 @@ can see.
 
 from __future__ import annotations
 
+import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from ai_harness.llm.serving.models import ServingPlan
 
@@ -198,6 +201,37 @@ def render(
     )
 
 
+UNIT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+"""What a systemd **user** unit gets when nothing sets ``PATH`` — no conda, no virtualenv.
+Written down because every failure in this file's neighbourhood comes from assuming otherwise."""
+
+
+def resolve_binary(
+    configured: str,
+    *,
+    root: Path,
+    which: Callable[[str], str | None] = shutil.which,
+) -> str | None:
+    """The absolute path a unit must name, or ``None`` when there is nothing to name.
+
+    systemd requires an absolute ``ExecStart``, and a *user* unit's ``PATH`` excludes conda and
+    every virtualenv. So a bare name is resolved here, at render time, on the box that will run
+    it — the same thing `agent install` does for its own binary (``install.py``), applied to the
+    one executable whose absence is otherwise reported as ``203/EXEC`` twenty seconds after a
+    start nobody watched.
+
+    ``None`` rather than the bare name, because "I could not find it" and "here it is" are
+    different answers and only the caller knows whether to warn or to refuse.
+    """
+    candidate = Path(configured)
+    if len(candidate.parts) > 1:
+        absolute = candidate if candidate.is_absolute() else (root / candidate)
+        resolved = absolute.resolve()
+        return str(resolved) if resolved.exists() else None
+    found = which(configured)
+    return str(Path(found).resolve()) if found else None
+
+
 def serving_unit_name(model: str) -> str:
     """``ai-harness-serve-qwen3-coder-30b``. Deterministic, so a re-install targets one file."""
     slug = model.replace("/", "-").replace("_", "-").lower()
@@ -217,14 +251,23 @@ def render_serving(
 
     ``conflicts`` are the other models in the registry, not a hand-maintained list: the point of
     L2 is that the *set* of things that must not run together is derived from what exists.
+
+    An absolute ``vllm_bin`` also contributes its directory to ``PATH``. An absolute
+    ``ExecStart`` is enough for *systemd* and not enough for **vLLM**, which shells out by name
+    to the build tools beside it — ``ninja`` first, when it compiles a kernel. Naming the binary
+    and then leaving its siblings unreachable produces a start that gets as far as loading the
+    weights and then dies on ``FileNotFoundError: 'ninja'``, which reads as a broken model and is
+    a broken ``PATH``.
     """
     argv = plan.argv(binary=vllm_bin)
     conflict_lines = "".join(
         f"Conflicts={serving_unit_name(other)}.service\n" for other in conflicts
     )
-    lines = "".join(
-        f"Environment={key}={value}\n" for key, value in sorted((environment or {}).items())
-    )
+    binary = Path(vllm_bin)
+    resolved_env = dict(environment or {})
+    if binary.is_absolute():
+        resolved_env.setdefault("PATH", f"{binary.parent}:{UNIT_PATH}")
+    lines = "".join(f"Environment={key}={value}\n" for key, value in sorted(resolved_env.items()))
     service = SERVING_SERVICE.format(
         model=plan.spec.name,
         repo_id=plan.spec.repo_id,

@@ -48,3 +48,11 @@ agent serving conformance devstral-24b --out docs/measurements/conformance.md
   still run unattended; one in ten cannot.
 - The same measurement **without** guided decoding is recorded too, because it is what the
   fallback path actually costs when a server comes back up with different flags.
+
+## Conformance — qwen3-coder-30b
+
+| model | template | guided | cases | first pass | valid | repairs/call | refused | rungs |
+|---|---|---|---:|---:|---:|---:|---:|---|
+| qwen3-coder-30b | planner-v1-local | yes | 3 | 100% | 100% | 0.00 | 0% | raw:3 |
+
+`first pass` is the fraction that validated with zero repairs — the number that decides whether guided decoding earns its flags. A repair is a full re-generation, so at 30 tok/s `repairs/call` is wall-clock, not cents.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from ai_harness.deploy.units import render_serving, serving_unit_name
+from ai_harness.deploy.units import render_serving, resolve_binary, serving_unit_name
 from ai_harness.kernel.outcome import ErrorCategory
 from ai_harness.llm.serving.bench import BenchPoint, BenchResult
 from ai_harness.llm.serving.health import HealthClient
@@ -118,6 +118,35 @@ def test_the_unit_conflicts_with_every_other_model():
     # Pinned weights must not be able to download something nobody reviewed.
     assert "HF_HUB_OFFLINE=1" in service
     assert "--max-model-len 65536" in service
+
+
+def test_a_relative_binary_is_resolved_against_the_repository(tmp_path):
+    binary = tmp_path / ".venv-vllm" / "bin" / "vllm"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n")
+
+    resolved = resolve_binary(".venv-vllm/bin/vllm", root=tmp_path)
+    assert resolved == str(binary.resolve())
+
+    service = render_serving(
+        ModelRegistry(gpu=GPU, models=[QWEN]).plan("qwen3-coder-30b"),
+        working_dir=str(tmp_path),
+        vllm_bin=resolved or "vllm",
+    )[1]
+    # systemd requires an absolute ExecStart and a *user* unit's PATH has neither conda nor a
+    # virtualenv on it, so a bare name here is a unit that exits 203/EXEC before it reads a flag.
+    assert f"ExecStart={binary.resolve()} serve" in service
+    # And the binary's own directory joins PATH, because vLLM shells out by name to the tools
+    # beside it. An absolute ExecStart alone gets as far as loading the weights and then dies on
+    # `FileNotFoundError: 'ninja'` — a broken PATH wearing a broken model's clothes.
+    assert f"Environment=PATH={binary.parent.resolve()}:" in service
+
+
+def test_a_binary_that_is_nowhere_resolves_to_nothing_rather_than_to_itself(tmp_path):
+    # Not the bare name back: "I could not find it" and "here it is" are different answers, and
+    # returning the input would render a unit that looks resolved and is not.
+    assert resolve_binary("no-such-binary-anywhere", root=tmp_path, which=lambda _: None) is None
+    assert resolve_binary("bin/absent", root=tmp_path) is None
 
 
 # ── the health contract ──────────────────────────────────────────────────────────

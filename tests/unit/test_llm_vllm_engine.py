@@ -139,6 +139,7 @@ def test_the_wiring_builds_a_local_engine_from_the_committed_registry():
     from pathlib import Path
 
     from ai_harness.config import HarnessConfig
+    from ai_harness.llm.serving.models import load_registry
     from ai_harness.wiring import build_engine
 
     root = Path(__file__).resolve().parents[2]
@@ -148,5 +149,11 @@ def test_the_wiring_builds_a_local_engine_from_the_committed_registry():
 
     engine = build_engine(config)
     assert engine.name == "local"
-    assert getattr(engine, "max_model_len", None) == 65536
+    # The registry's own arithmetic, not a literal: the window is *derived* from the card, the
+    # weights and the operator cap, so a test that repeats one of its outputs asserts that the
+    # numbers have not changed rather than that the wiring reads them.
+    assert (
+        getattr(engine, "max_model_len", None)
+        == load_registry(root=root).plan("qwen3-coder-30b").max_model_len
+    )
     assert getattr(engine, "base_url", "").endswith(":8000/v1")

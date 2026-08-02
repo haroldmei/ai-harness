@@ -155,6 +155,7 @@ def test_the_engine_takes_its_capabilities_from_the_cached_probe(tmp_path):
     from pathlib import Path
 
     from ai_harness.config import HarnessConfig
+    from ai_harness.llm.serving.models import load_registry
     from ai_harness.wiring import build_local_engine, probe_cache_path
 
     root = Path(__file__).resolve().parents[2]
@@ -164,11 +165,17 @@ def test_the_engine_takes_its_capabilities_from_the_cached_probe(tmp_path):
     unprobed = build_local_engine(config)
     assert unprobed.capabilities.native_structured_output is False
 
+    # The pin comes from the committed registry rather than a literal: the cache is keyed on
+    # (server, model, **revision**) precisely so that new weights get a new answer, and a test
+    # that hard-codes a digest stops testing that the moment the pin moves — which is the one
+    # event the keying exists for.
+    pinned = load_registry(root=root).get("qwen3-coder-30b").revision
+
     ProbeCache(probe_cache_path(config)).store(
         ProbeResult(
             model="qwen3-coder-30b",
             base_url="http://127.0.0.1:8000/v1",
-            revision="0" * 40,
+            revision=pinned,
             guided_decoding=True,
             prefix_caching=True,
             max_model_len=32768,

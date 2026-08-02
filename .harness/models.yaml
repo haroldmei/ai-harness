@@ -6,46 +6,85 @@
 # against an 80 GB card is how a server starts fine and then OOMs on the first long diff.
 #
 # `revision` is a commit digest, never a tag (L1). A tag moves; a model upgrade changes the
-# behaviour of every agent at once and is therefore a deployment, not a pull. The digests below
-# are placeholders in the shape of the real thing — `agent serving check` refuses a server whose
-# loaded revision does not match, so a wrong pin fails loudly at startup rather than quietly in
-# a review.
+# behaviour of every agent at once and is therefore a deployment, not a pull. `agent serving
+# check` refuses a server whose loaded revision does not match, so a wrong pin fails loudly at
+# startup rather than quietly in a review.
+#
+# Both `repo_id`s name **community** quantisations, and that is not a shortcut: neither vendor
+# publishes a 4-bit build of these weights. Qwen ships FP8 and mistralai ships bf16 and GGUF,
+# and at 8-bit a 30B and a 24B need ~30 GB and ~24 GB against 23 GB usable. 4-bit is the only
+# arithmetic that fits the card, so the choice is which community build to pin — recorded here
+# rather than left to whoever runs the download.
+
+# Which vLLM serves these. A systemd *user* unit's PATH is /usr/local/sbin:/usr/local/bin:
+# /usr/sbin:/usr/bin:/sbin:/bin — no conda, no virtualenv — so a bare `vllm` that works in the
+# shell fails the unit with 203/EXEC. Relative to the repository root, the same convention
+# `.harness/gates.yaml` uses for `.venv/bin/ruff`, and for the same reason: the version that
+# runs must be the version that was chosen.
+vllm_bin: .venv-vllm/bin/vllm
 
 gpu:
   name: RTX 4090
   vram_gb: 24.0
   # Left for the compositor, CUDA context and fragmentation headroom. On a headless box this
   # can go to 0.5; on a workstation somebody is also using, it cannot.
-  reserve_gb: 1.0
+  #
+  # 2.5, and it is measured rather than chosen. `nvidia-smi` on this idle WSL desktop:
+  #     24564 MiB total, 2128 MiB used, 22011 MiB free
+  # — 2.08 GiB is gone before vLLM asks for anything, with no compute process holding it. At
+  # 1.0 the derived --gpu-memory-utilization was 0.958 ⇒ 22.98 GiB, and vLLM refuses to start
+  # when *free* memory is below what the flag asks for:
+  #     ValueError: Free memory on device cuda:0 (22.45/23.99 GiB) on startup is less than
+  #     desired GPU memory utilization (0.958, 22.98 GiB)
+  # 2.5 leaves ~0.4 GiB over the observed usage. A headless box can take this back.
+  reserve_gb: 2.5
 
 models:
   # Qwen3-Coder 30B-A3B — the implementer (L1).
-  #   weights : ~30.5B params at 4-bit AWQ, plus non-quantised embeddings ⇒ ~17.5 GB
+  #   weights : 16.85 GB of safetensors across 4 shards, measured from the repo's own file list
   #   kv/token: 2 (K,V) × 48 layers × 4 KV heads × 128 head_dim × 1 B (fp8) = 49 152 B
+  #             — read from this revision's config.json, not from the model card
   - name: qwen3-coder-30b
-    repo_id: Qwen/Qwen3-Coder-30B-A3B-Instruct-AWQ
-    revision: "0000000000000000000000000000000000000000"
-    quantisation: awq-4bit
-    weights_gb: 17.5
+    repo_id: cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit
+    revision: "4bd30395b72ea6045edd04806c4fea448d4467b3"
+    # The repo name says AWQ; the config declares `compressed-tensors`. The label follows the
+    # config, because that is what vLLM dispatches on.
+    quantisation: compressed-tensors-4bit
+    weights_gb: 16.9
     kv_bytes_per_token: 49152
     native_max_model_len: 262144
-    activation_gb: 1.5
+    # 0.72 GiB peak activation + 1.03 GiB non-torch, both read from vLLM's own startup report
+    # rather than assumed. The default 1.5 was close, and "close" is what leaves 0.04 GiB for a
+    # cache that needs 2.58.
+    activation_gb: 1.8
     kv_cache_dtype: fp8
-    # The cache would hold ~87k tokens; 64k is the operator ceiling, because prefill time grows
-    # with the window and on a serial GPU that time is taken from the tests.
+    # 64k is the operator ceiling, because prefill time grows with the window and on a serial
+    # GPU that time is taken from the tests. On this card the *cache* binds first — see the
+    # arithmetic in `agent serving args qwen3-coder-30b --explain`.
     cap_max_model_len: 65536
     port: 8000
     roles: [implementer, planner, triager]
+    # CUDA graphs cost ~2.3 GiB on this model, and on a 24 GB card that is the difference
+    # between a 60k window and an 11k one. vLLM's own accounting, from a calibration start:
+    #     16.93 GiB weight, 0.72 GiB peak activation, 1.03 GiB non-torch, 0.0 GiB CUDAGraph
+    #     ⇒ Available KV cache memory: 2.91 GiB (63 472 tokens)
+    # With graphs enabled the same start left 0.04 GiB for the cache and refused:
+    #     ValueError: To serve at least one request with the model's max seq len (56320),
+    #     2.58 GiB KV cache is needed … estimated maximum model length is 864
+    # Eager decode is slower per token; a window five times larger is worth more to an
+    # implementer reading a repository than the throughput is. Re-measure with `serving bench`
+    # before reversing this.
+    extra_args: ["--enforce-eager"]
 
   # Devstral 24B — the reviewer, and the reason `reviewer != implementer` still means something
   # on one card (L2: never co-resident with the above).
-  #   weights : ~24B params at 4-bit AWQ ⇒ ~14.0 GB
+  #   weights : 13.26 GB of safetensors across 3 shards, measured from the repo's own file list
   #   kv/token: 2 × 40 layers × 8 KV heads × 128 head_dim × 1 B (fp8) = 81 920 B
   - name: devstral-24b
-    repo_id: mistralai/Devstral-Small-2507-AWQ
-    revision: "1111111111111111111111111111111111111111"
+    repo_id: cyankiwi/Devstral-Small-2507-AWQ-4bit
+    revision: "bfd216ffbd251875977a8fb3b91b162de55368bb"
     quantisation: awq-4bit
-    weights_gb: 14.0
+    weights_gb: 13.3
     kv_bytes_per_token: 81920
     native_max_model_len: 131072
     activation_gb: 1.5
