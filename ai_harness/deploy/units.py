@@ -201,6 +201,14 @@ def render(
     )
 
 
+def _under_wsl() -> bool:
+    """WSL2, read from the kernel string the way every other tool does."""
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
 UNIT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 """What a systemd **user** unit gets when nothing sets ``PATH`` — no conda, no virtualenv.
 Written down because every failure in this file's neighbourhood comes from assuming otherwise."""
@@ -268,6 +276,13 @@ def render_serving(
     resolved_env = dict(environment or {})
     if binary.is_absolute():
         resolved_env.setdefault("PATH", f"{binary.parent}:{UNIT_PATH}")
+    if _under_wsl():
+        # vLLM gates pinned memory off by default under WSL2 even on kernels that support it,
+        # and its UVA buffers then refuse to allocate: `RuntimeError: UVA is not available`,
+        # at model-runner construction, on a card with 22 GB free. Rendered into the unit
+        # because the alternative is a hand-written drop-in that the next `agent serving unit`
+        # silently drops — which is a failure that returns weeks later wearing a new face.
+        resolved_env.setdefault("VLLM_WSL2_ENABLE_PIN_MEMORY", "1")
     lines = "".join(f"Environment={key}={value}\n" for key, value in sorted(resolved_env.items()))
     service = SERVING_SERVICE.format(
         model=plan.spec.name,

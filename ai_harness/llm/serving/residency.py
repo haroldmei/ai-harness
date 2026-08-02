@@ -33,7 +33,7 @@ import asyncio
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from ai_harness.kernel.clock import Clock, SystemClock
 from ai_harness.kernel.lease import LeaseHandle, LeaseManager
@@ -77,6 +77,10 @@ class ResidencyPolicy:
     thrash_swaps: int = 4
     """More than this in the window is logged with the alternation named, because the fix is
     usually a batching bug rather than a policy number."""
+    ready_timeout_s: float = 420.0
+    """How long a load may take before the swap is called failed. A 4-bit 30B is tens of seconds
+    of weights plus graph compilation, and the unit's own ``TimeoutStartSec`` is 600."""
+    ready_poll_s: float = 3.0
     lease_ttl_s: float = 1800.0
     """Long: a swap plus a generation is minutes, and a lease that expires mid-generation is a
     lost run — which is precisely the class of failure a week-long soak finds and a unit test
@@ -237,13 +241,28 @@ class ModelSlot:
         return Outcome.ok(seconds)
 
     async def _await_ready(self, spec: ModelSpec) -> Outcome[None]:
+        """Poll until the server answers, or the deadline passes.
+
+        One attempt is not a wait. `systemctl start` returns when the process has been spawned,
+        and a 4-bit 30B then spends the better part of a minute loading weights and compiling —
+        so the single call this used to make hit a closed port every time and reported the swap
+        as failed. The run recovered on a 60s deferral, which means the cost was a wasted
+        dispatch rather than a lost run, and a wasted dispatch on every swap is still the
+        difference between a loop that converges and one that crawls.
+        """
         if self.health is None:
             return Outcome.ok(None)
-        outcome = await self.health(spec).ready(spec)
-        if outcome.is_err:
-            assert outcome.error is not None
-            return Outcome.of(outcome.error)
-        return Outcome.ok(None)
+        deadline = self.clock.monotonic() + self.policy.ready_timeout_s
+        last: Outcome[Any] | None = None
+        while True:
+            last = await self.health(spec).ready(spec)
+            if last.is_ok:
+                return Outcome.ok(None)
+            if self.clock.monotonic() >= deadline:
+                break
+            await asyncio.sleep(self.policy.ready_poll_s)
+        assert last is not None and last.error is not None
+        return Outcome.of(last.error)
 
     def _record(self, event: SwapEvent) -> None:
         self.swaps.append(event)

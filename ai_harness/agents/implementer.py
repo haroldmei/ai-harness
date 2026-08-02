@@ -18,7 +18,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from ai_harness.agents.base import PROMPTS, Agent, AgentCall
-from ai_harness.agents.edits import AnchoredEdit, EditError, apply_anchor
+from ai_harness.agents.edits import AnchoredEdit, EditError, apply_anchor, prefers_whole_file
 from ai_harness.agents.templates import template_for
 from ai_harness.context.trust import Provenance, Trusted, TrustedPrompt, Untrusted
 from ai_harness.kernel.outcome import ErrorCategory, Outcome
@@ -102,6 +102,23 @@ def build_prompt(
             Trusted("Findings to address:\n" + "\n".join(f"- {f}" for f in brief.findings))
         )
     prompt.add_trusted(Trusted(f"Repository: {repo}"))
+
+    # Which files to restate whole rather than anchor into. An anchor must be reproduced
+    # character-for-character or `apply_anchor` refuses it, and on a fix round — where the model
+    # is re-reading a file it already changed — that is where these runs actually died. For a
+    # small file the anchor saves nothing and risks everything, and `prefers_whole_file` has
+    # encoded that threshold, untouched by any caller, since it was written.
+    #
+    # Trusted, because it is an instruction. The file *contents* below are untrusted and stay
+    # that way; a directive derived from their size is ours.
+    restate = [path for path, body in brief.current_files.items() if prefers_whole_file(body)]
+    if restate:
+        prompt.add_trusted(
+            Trusted(
+                "Restate these files in FULL (whole-file content, no anchor) — they are small "
+                "enough that an anchor saves nothing: " + ", ".join(sorted(restate))
+            )
+        )
 
     where = f"issue #{brief.issue_number}" if brief.issue_number else "issue"
     if brief.issue_title:
