@@ -18,3 +18,4 @@ __pycache__/
 .coverage
 build/
 dist/
+.VSCodeCounter/
