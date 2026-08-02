@@ -92,3 +92,23 @@ def test_well_formed_output_is_never_rewritten():
 
     assert result.found and result.rung is Rung.RAW
     assert result.value["edits"][0]["content"] == "one\ntwo"
+
+
+def test_a_recoverable_document_is_not_replaced_by_a_piece_of_itself():
+    """Ordering is the whole content of the repair rung.
+
+    A bracket scan happily parses an inner object — one element of `anchored_edits` — and that
+    object IS valid JSON, so a ladder that scans before it repairs accepts the fragment and the
+    schema then reports `summary: Field required` about a document whose first key is `summary`.
+    That is what escalated three runs of issue #327.
+    """
+    raw = (
+        '{"summary": "s", "anchored_edits": [{"path": "a.js", "anchor": "one\ntwo", '
+        '"replacement": "x"}]}'
+    )
+    result = extract_object(raw)
+
+    assert result.found
+    # The document, not the element inside it.
+    assert sorted(result.value) == ["anchored_edits", "summary"]
+    assert result.value["anchored_edits"][0]["anchor"] == "one\ntwo"

@@ -162,22 +162,29 @@ def extract_json(text: str) -> Extraction:
         if parsed is not None:
             return Extraction(value=parsed, rung=Rung.FENCED, candidates_tried=tried)
 
-    for candidate in _balanced_candidates(text):
+    # Repair the WHOLE document before scanning it for fragments. Ordering is the whole content
+    # of this rung: a bracket scan happily parses an inner object — one element of
+    # `anchored_edits`, say — and that object is valid JSON, so the ladder accepts it and the
+    # schema then reports `summary: Field required` about a document whose first key is
+    # `summary`. Salvaging a fragment must be the *last* resort, after re-escaping has been
+    # tried, or a recoverable document is silently replaced by a piece of itself.
+    repaired = escape_control_characters_in_strings(text)
+    if repaired != text:
+        tried += 1
+        parsed = _try_parse(repaired)
+        if parsed is not None:
+            return Extraction(value=parsed, rung=Rung.RAW, candidates_tried=tried)
+        for block in _fenced_blocks(repaired):
+            tried += 1
+            parsed = _try_parse(block)
+            if parsed is not None:
+                return Extraction(value=parsed, rung=Rung.FENCED, candidates_tried=tried)
+
+    for candidate in [*_balanced_candidates(text), *_balanced_candidates(repaired)]:
         tried += 1
         parsed = _try_parse(candidate)
         if parsed is not None:
             return Extraction(value=parsed, rung=Rung.BRACKET_SCAN, candidates_tried=tried)
-
-    # Last rung: the same candidates with their string literals re-escaped. Ordered last so a
-    # well-formed answer is never rewritten — the repair only ever runs on text that has already
-    # failed to parse as it stands, and it must still parse afterwards to count.
-    repaired = escape_control_characters_in_strings(text)
-    if repaired != text:
-        for candidate in [repaired, *_balanced_candidates(repaired)]:
-            tried += 1
-            parsed = _try_parse(candidate)
-            if parsed is not None:
-                return Extraction(value=parsed, rung=Rung.BRACKET_SCAN, candidates_tried=tried)
 
     return Extraction(value=None, rung=Rung.NONE, candidates_tried=tried)
 
