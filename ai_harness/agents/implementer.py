@@ -205,6 +205,29 @@ class Implementer:
             return Outcome.of(applied.error)  # type: ignore[arg-type]
         return Outcome.ok(call)
 
+    def _resolve(self, path: str) -> Path:
+        """The file the model meant, when the path it wrote does not exist.
+
+        `ground_plan` does this for the *plan*, and a repair round does not go through the plan:
+        the model writes a path straight into its edit, and on a fix round it reaches for one it
+        remembers rather than one it was shown — `src/ui/analysisPanel.js` for a file that lives
+        at `browser-extension/modules/analysisPanel.js`.
+
+        Resolution, not guessing, on the same rule the plan uses: exactly one file in the tree
+        with that basename, or the path stands and the anchor fails loudly. Zero matches is a
+        create and must stay a create; two or more is ambiguous and picking one would write into
+        a file nobody chose.
+        """
+        target = self.workspace / path
+        if target.exists():
+            return target
+        matches = [
+            candidate
+            for candidate in self.workspace.rglob(Path(path).name)
+            if candidate.is_file() and ".git" not in candidate.parts
+        ]
+        return matches[0] if len(matches) == 1 else target
+
     async def _apply(self, output: ImplementationOutput) -> Outcome[int]:
         """Every write goes through the broker — containment, policy and audit included."""
         materialised = self._materialise(output)
@@ -240,7 +263,7 @@ class Implementer:
         """
         edits = list(output.edits)
         for anchored in output.anchored_edits:
-            target = self.workspace / anchored.path
+            target = self._resolve(anchored.path)
             if not target.exists():
                 return Outcome.fail(
                     ErrorCategory.VALIDATION,
@@ -263,7 +286,16 @@ class Implementer:
                         "anchor_head": exc.anchor[:200],
                     },
                 )
-            edits.append(FileEdit(path=result.path, content=result.content, intent=result.intent))
+            # The resolved path, not the one the model wrote: reading the right file and then
+            # writing back to the invented one would create `src/ui/analysisPanel.js` containing
+            # a correct edit to a file that lives somewhere else.
+            edits.append(
+                FileEdit(
+                    path=str(target.relative_to(self.workspace)),
+                    content=result.content,
+                    intent=result.intent,
+                )
+            )
         return Outcome.ok(edits)
 
     def editor(self, brief: ImplementerBrief, *, run: object = None):  # type: ignore[no-untyped-def]
