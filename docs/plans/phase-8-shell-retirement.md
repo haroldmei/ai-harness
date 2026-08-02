@@ -40,13 +40,37 @@ names.
 | **The verify loop** `verify-loop.sh`, `adversarial-loop.sh` | 2 | `build-product-v2`, `adversarial-strategy-loop` | `agent verify`; `quality/adversarial.py` already exists |
 | **Iteration bookkeeping** `iteration-*.sh`, `generate-iteration-index.sh` | 4 | `build-product-v2`, `iterate` | `agent iteration` |
 | **Deploy surface** `deploy.sh`, `pre-deploy.sh`, `verify-deploy.sh`, `rollback.sh`, `local-deploy.sh`, `canary-deploy.sh`, `release-train.sh` | 7 | `deployer`, `rollback`, `env-manager`, `cicd` | `agent deploy`; `deploy/` and `providers/deploy/` largely exist |
-| **Setup scripts** `*-setup.sh` | 6 | operators | `agent install` |
+| **Setup scripts** `*-setup.sh` | 6 | operators | classified below (#111): 1 covered, 3 obsolete, 1 out of scope, 1 blocked on #114 |
 | **Remaining tests and `lib/`** | 19 | nothing / each other | Deleted with what they test |
 
 Ten skills invoke shell today — `build-product`, `build-product-v2`, `iterate`, `signal-iterate`,
 `dogfood`, `cicd`, `deployer`, `rollback`, `env-manager`, `adversarial-strategy-loop`. Each is
 part of the port rather than an afterthought: a script with no callers left is deletable; a script
 whose caller still names it is not.
+
+## The six setup scripts, classified (#111)
+
+Each installs labels and a systemd timer for a shell loop. What replaced the loop decides what
+happens to its setup — and only one of the six needs anything built.
+
+| Script | Classification | Why |
+|---|---|---|
+| `agent-inbox-setup.sh` | **covered** by `agent install` | Labels plus a timer for the inbox loop. `agent install` already renders the `tick` and `work` units and creates `LABELS`; the states replaced the loop |
+| `agent-pr-loop-setup.sh` | **obsolete** | Its nine labels — `review-needed`, `fix-wip`, `merge-stuck` … — *are* the shell pipeline's state machine. The Python engine keeps run state in the store, where it can be queried and replayed, so the labels have nothing left to mean |
+| `local-deploy-setup.sh` | **obsolete** | Deployment is a state inside a run (#65), not a timer watching merges. That fan-out is exactly what the sequential pipeline replaced |
+| `db-backup-setup.sh` | **out of scope** | Product infrastructure — a database's backup schedule — and it copies units from `deploy/systemd/`, which does not exist in this repository |
+| `release-train-setup.sh` | **out of scope, wrapped** | The release train is periphery, wrapped as a subprocess adapter by `providers/deploy/script.py` per §3.16's *wrap temporarily — or never* |
+| `agent-scout-setup.sh` | **blocked on #114** | Its labels are already in `LABELS`. Its timer is not, and cannot be: `scout/service.py` exists and **nothing constructs or starts it** |
+
+The scout finding is the Phase 6 shape again — *"`agent work` and `agent tick` did not exist even
+though `Worker` and `Ticker` were finished and tested"*. `Scout` needs a producer and a critic
+injected, the composition root builds neither, and there is no command. That is an entry point to
+build (#114), not a setup script to port.
+
+**One behaviour has to survive the deletion, and it is not in any of these files' output.**
+`agent-pr-loop-setup.sh` *disables* the timers it supersedes. When the stages are deleted (#101),
+whatever is left running on an operator's box has to be disabled too, or a host keeps firing
+timers into binaries that no longer exist.
 
 ## Does this break §19.1?
 
