@@ -137,11 +137,20 @@ class ServingPlan:
         """Loopback, always (L3). The endpoint is not reachable off this host."""
         return f"http://127.0.0.1:{self.spec.port}/v1"
 
-    def argv(self, *, binary: str = "vllm") -> list[str]:
+    def argv(self, *, binary: str = "vllm", model: str | None = None) -> list[str]:
+        """The command line. ``model`` overrides what is served — a resolved snapshot path.
+
+        Serving the path rather than the repo id is what makes the running server's identity
+        attributable: vLLM echoes what it was started with as ``root`` in ``/v1/models`` and has
+        no revision field of its own, so a repo id comes back as a repo id and the pin can only
+        be taken on trust. ``--revision`` is kept either way — it is inert against a local path
+        and it keeps the intent on the command line, where an operator reading `systemctl cat`
+        can see which commit this unit is for.
+        """
         return [
             binary,
             "serve",
-            self.spec.repo_id,
+            model or self.spec.repo_id,
             "--revision",
             self.spec.revision,
             "--served-model-name",

@@ -20,6 +20,7 @@ import httpx
 
 from ai_harness.kernel.clock import Clock, SystemClock
 from ai_harness.kernel.outcome import ErrorCategory, Outcome
+from ai_harness.llm.serving.cache import revision_from_path
 from ai_harness.llm.serving.models import ModelSpec, check_revision
 
 
@@ -184,6 +185,14 @@ def _card(cards: list[dict[str, Any]], name: str | None) -> dict[str, Any]:
 
 
 def _revision(card: dict[str, Any]) -> str | None:
+    """The revision this server is serving, from wherever it is willing to say it.
+
+    The named keys come first because a server that publishes one is telling us directly. None
+    of them exists in vLLM's OpenAI-compatible card — it carries ``id``, ``root``, ``parent``,
+    ``max_model_len`` and an OpenAI-compatibility ``permission`` block, and the schema has no
+    concept of a revision — so ``root`` is the one that answers in practice, and only because
+    the unit points it at a snapshot directory whose name *is* the digest.
+    """
     for key in ("revision", "root_revision", "model_revision"):
         value = card.get(key)
         if value:
@@ -193,6 +202,10 @@ def _revision(card: dict[str, Any]) -> str | None:
         value = permission[0].get("revision") if isinstance(permission[0], dict) else None
         if value:
             return str(value)
+    for key in ("root", "id"):
+        value = card.get(key)
+        if isinstance(value, str) and (found := revision_from_path(value)):
+            return found
     return None
 
 

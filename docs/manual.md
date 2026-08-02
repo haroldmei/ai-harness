@@ -1075,13 +1075,29 @@ is this arithmetic being wrong, not the model being too big.
 loading, and that window is long enough for a worker to claim a run against a model that cannot
 answer yet. It also refuses a server whose loaded revision is not the pinned one.
 
-> **`check` cannot pass against vLLM 0.26.** It reads the revision from `/v1/models`, trying
-> `revision`, `root_revision`, `model_revision` and `permission[0].revision`; vLLM 0.26 publishes
-> none of them — `root` carries the *repo id*, not the digest — so `check` reports *"the server
-> did not report a revision"* and exits 1 even when the server was started with `--revision`.
-> That is the harness's own rule (*"an unreported revision is not the same as a matching one"*)
-> meeting a server that never reports one. Until it is resolved, use `agent serving probe` to
-> confirm a server is up and answering; it exercises a real generation and checks the window.
+**How it can check that at all** is worth knowing, because vLLM does not help. Its
+OpenAI-compatible `/v1/models` card carries `id`, `root`, `parent`, `max_model_len` and a
+`permission` block — and no revision field of any kind. `--revision` decides which weights are
+*loaded*; it does not make them *reportable*. A server started against a repo id echoes that repo
+id back, so its identity could only be taken on trust, which is exactly what
+`check_revision` refuses to do.
+
+So the unit serves the **snapshot directory** rather than the repo id:
+
+```
+ExecStart=…/vllm serve /home/you/.cache/huggingface/hub/models--org--name/snapshots/4bd30395… \
+  --revision 4bd30395… --served-model-name qwen3-coder-30b …
+```
+
+`root` then *is* the digest, and the revision comes back from the process that actually loaded
+the weights rather than from the configuration that hoped to. `--served-model-name` keeps the
+roster's name on the wire, and `--revision` stays — inert against a local path, but `systemctl
+cat` should say which commit a unit is for. `agent serving unit` resolves the snapshot for you;
+when the weights are not cached it falls back to the repo id, and `agent doctor` has already told
+you to fetch them.
+
+The rule itself is unchanged: a server that reports nothing still fails, and a snapshot path
+naming a different commit is still a mismatch.
 
 Nothing in `agent serving` starts or stops anything. Installing is `agent install`'s job, and the
 separation is deliberate: a command that both renders and starts is one people run before they
@@ -1177,6 +1193,7 @@ roster. Rehearse it before the soak, not after.
 | `agent install --enable` refuses | repository not cut over | install the units now, enable them after the shadow comparison closes |
 | `shadow observe` refuses: "the configured forge can write" | shadow needs a write-blocked client | the shell path owns the label during the comparison |
 | `serving check` says the revision does not match | the server loaded other weights | restart the unit against the pinned digest |
+| `serving check` says *"the server did not report a revision"* | the server was started against a **repo id**, so its card carries no digest — vLLM has no revision field | re-render with `agent serving unit`, which serves the snapshot directory; a hand-written `vllm serve <repo_id>` can never satisfy this check |
 | the serving unit dies instantly with `status=203/EXEC` | systemd could not exec the binary: vLLM absent, or `vllm_bin` is a bare name a **user** unit's minimal `PATH` cannot see | `agent doctor` — the `vllm` check names the resolved path or says there is none; set `vllm_bin` in `.harness/models.yaml` |
 | the unit starts, then exits while loading | the pinned revision is not in the Hub cache and `HF_HUB_OFFLINE=1` forbids fetching it | `agent doctor` — the `weights:<model>` check prints the exact `hf download` |
 | `hf download …: syntax error near unexpected token` | a `<placeholder>` was pasted literally; bash read `<` as a redirection | substitute the real digest from `models.yaml` |

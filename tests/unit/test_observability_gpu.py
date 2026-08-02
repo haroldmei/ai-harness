@@ -6,7 +6,8 @@ from pathlib import Path
 
 import httpx
 
-from ai_harness.cli.commands.doctor import diagnose, hub_cache_root
+from ai_harness.cli.commands.doctor import diagnose
+from ai_harness.llm.serving.cache import hub_cache_root
 from ai_harness.llm.serving.models import GpuSpec, ModelRegistry, ModelSpec
 from ai_harness.observability.gpu import (
     GpuReading,

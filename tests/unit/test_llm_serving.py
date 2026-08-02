@@ -8,6 +8,7 @@ import pytest
 from ai_harness.deploy.units import render_serving, resolve_binary, serving_unit_name
 from ai_harness.kernel.outcome import ErrorCategory
 from ai_harness.llm.serving.bench import BenchPoint, BenchResult
+from ai_harness.llm.serving.cache import revision_from_path
 from ai_harness.llm.serving.health import HealthClient
 from ai_harness.llm.serving.models import (
     GpuSpec,
@@ -140,6 +141,107 @@ def test_a_relative_binary_is_resolved_against_the_repository(tmp_path):
     # beside it. An absolute ExecStart alone gets as far as loading the weights and then dies on
     # `FileNotFoundError: 'ninja'` — a broken PATH wearing a broken model's clothes.
     assert f"Environment=PATH={binary.parent.resolve()}:" in service
+
+
+# ── serving the snapshot path, so the server can say what it loaded ──────────────
+#
+# vLLM's OpenAI-compatible card has no revision field: `root` is whatever it was started with,
+# and `--revision` decides which weights are *loaded* without making them *reportable*. Started
+# against a repo id, the server can only be taken on trust — which is precisely what
+# `check_revision` refuses to do.
+
+
+def test_the_served_model_can_be_a_path_while_the_roster_name_is_unchanged():
+    snapshot = "/cache/models--org--name/snapshots/" + "a" * 40
+    argv = QWEN.plan(GPU).argv(model=snapshot)
+
+    assert argv[argv.index("serve") + 1] == snapshot
+    # The roster names `qwen3-coder-30b`, and every request the harness makes uses that name, so
+    # it must survive being served from a directory.
+    assert argv[argv.index("--served-model-name") + 1] == "qwen3-coder-30b"
+    # Kept, though inert against a local path: `systemctl cat` should say which commit this is.
+    assert argv[argv.index("--revision") + 1] == QWEN.revision
+
+
+def test_the_digest_is_read_back_out_of_the_path_the_server_echoes():
+    sha = "4bd30395b72ea6045edd04806c4fea448d4467b3"
+    assert revision_from_path(f"/cache/models--org--name/snapshots/{sha}") == sha
+    assert revision_from_path(f"/cache/models--org--name/snapshots/{sha}/") == sha
+    # A repo id is not a path and carries no digest — the case that must keep failing.
+    assert revision_from_path("cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit") is None
+    assert revision_from_path("/cache/models--org--name/snapshots") is None
+    assert revision_from_path("/cache/models--org--name/snapshots/not-a-sha!") is None
+
+
+async def test_a_server_started_from_a_snapshot_path_is_attributable():
+    sha = QWEN.revision
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": QWEN.name,
+                        "root": f"/cache/models--org--name/snapshots/{sha}",
+                        "max_model_len": 65536,
+                    }
+                ]
+            },
+        )
+
+    async with _client(handler) as client:
+        health = (
+            await HealthClient(base_url="http://127.0.0.1:8000/v1", client=client).check(QWEN)
+        ).unwrap()
+    assert health.revision == sha
+
+
+async def test_a_server_started_from_a_repo_id_still_cannot_be_taken_on_trust():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"data": [{"id": QWEN.name, "root": QWEN.repo_id, "max_model_len": 65536}]}
+        )
+
+    async with _client(handler) as client:
+        outcome = await HealthClient(base_url="http://127.0.0.1:8000/v1", client=client).check(QWEN)
+
+    # The rule survives the workaround. Serving a path is how the server is *made* able to
+    # answer; it is not a reason to accept a server that did not.
+    assert outcome.is_err
+    assert outcome.error is not None and "did not report a revision" in outcome.error.message
+
+
+async def test_a_snapshot_path_naming_the_wrong_commit_is_still_a_mismatch():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": QWEN.name,
+                        "root": "/cache/models--org--name/snapshots/" + "c" * 40,
+                        "max_model_len": 65536,
+                    }
+                ]
+            },
+        )
+
+    async with _client(handler) as client:
+        outcome = await HealthClient(base_url="http://127.0.0.1:8000/v1", client=client).check(QWEN)
+
+    assert outcome.is_err
+    assert outcome.error is not None and "is pinned" in outcome.error.message
+
+
+def test_the_unit_serves_the_snapshot_directory_when_one_is_given(tmp_path):
+    snapshot = "/cache/models--org--name/snapshots/" + "a" * 40
+    service = render_serving(
+        ModelRegistry(gpu=GPU, models=[QWEN]).plan("qwen3-coder-30b"),
+        working_dir=str(tmp_path),
+        model=snapshot,
+    )[1]
+    assert f"serve {snapshot} " in service
 
 
 def test_a_binary_that_is_nowhere_resolves_to_nothing_rather_than_to_itself(tmp_path):

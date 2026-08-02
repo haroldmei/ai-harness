@@ -25,8 +25,9 @@ import typer
 
 from ai_harness.deploy.units import render_serving, resolve_binary, serving_unit_name
 from ai_harness.llm.serving.bench import DEFAULT_PROMPT_SIZES, measure
+from ai_harness.llm.serving.cache import cached_snapshot, hub_cache_root
 from ai_harness.llm.serving.health import HealthClient
-from ai_harness.llm.serving.models import ModelRegistry, RegistryError, load_registry
+from ai_harness.llm.serving.models import ModelRegistry, RegistryError, ServingPlan, load_registry
 
 serving_app = typer.Typer(help="Inspect the local model serving stack.")
 
@@ -41,6 +42,18 @@ def _registry(path: Path, file: Path | None) -> ModelRegistry:
     except RegistryError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_CONFIG) from exc
+
+
+def _served_model(plan: ServingPlan) -> str | None:
+    """The snapshot path to serve, or ``None`` to serve the repo id.
+
+    Serving the path is what lets the server answer "which revision" at all: vLLM echoes what it
+    was started with and has no revision field of its own. When the weights are not cached there
+    is nothing to point at, so the repo id stands — the start will fail on ``HF_HUB_OFFLINE``
+    anyway, and `agent doctor` says so first, with the download command.
+    """
+    snapshot = cached_snapshot(hub_cache_root(), plan.spec)
+    return str(snapshot) if snapshot is not None else None
 
 
 @serving_app.command("ls")
@@ -106,7 +119,7 @@ def serving_args(
         for line in plan.workings:
             typer.echo(f"# {line}")
     binary = resolve_binary(registry.vllm_bin, root=path) or registry.vllm_bin
-    typer.echo(" ".join(plan.argv(binary=binary)))
+    typer.echo(" ".join(plan.argv(binary=binary, model=_served_model(plan))))
 
 
 @serving_app.command("unit")
@@ -141,6 +154,7 @@ def serving_unit(
         plan,
         working_dir=str(path.resolve()),
         vllm_bin=binary or registry.vllm_bin,
+        model=_served_model(plan),
         conflicts=others,
     )
     typer.echo(f"# {name}.service")

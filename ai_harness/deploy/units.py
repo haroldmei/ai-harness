@@ -243,6 +243,7 @@ def render_serving(
     *,
     working_dir: str,
     vllm_bin: str = "vllm",
+    model: str | None = None,
     conflicts: tuple[str, ...] = (),
     environment: dict[str, str] | None = None,
     start_timeout_s: int = 600,
@@ -259,7 +260,7 @@ def render_serving(
     weights and then dies on ``FileNotFoundError: 'ninja'``, which reads as a broken model and is
     a broken ``PATH``.
     """
-    argv = plan.argv(binary=vllm_bin)
+    argv = plan.argv(binary=vllm_bin, model=model)
     conflict_lines = "".join(
         f"Conflicts={serving_unit_name(other)}.service\n" for other in conflicts
     )

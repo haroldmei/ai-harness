@@ -16,8 +16,6 @@ that repairs things is a diagnostic people are afraid to run.
 from __future__ import annotations
 
 import asyncio
-import os
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated
@@ -26,7 +24,8 @@ import httpx
 import typer
 
 from ai_harness.deploy.units import resolve_binary
-from ai_harness.llm.serving.models import ModelRegistry, ModelSpec, RegistryError, load_registry
+from ai_harness.llm.serving.cache import cached_snapshot, hub_cache_root
+from ai_harness.llm.serving.models import ModelRegistry, RegistryError, load_registry
 from ai_harness.observability.gpu import read_gpu, read_serving
 
 doctor_app = typer.Typer(help="Check that this box can actually serve models.")
@@ -36,37 +35,6 @@ EXIT_UNHEALTHY = 1
 EXIT_CONFIG = 2
 
 MB_PER_GB = 1024
-
-
-def hub_cache_root(environ: Mapping[str, str] | None = None) -> Path:
-    """Where the Hub keeps weights, by the Hub's own precedence.
-
-    Resolved rather than assumed because the serving unit sets ``HF_HUB_OFFLINE=1``: the cache is
-    the *only* place weights can come from at start time, so "which cache" is part of the
-    diagnosis and not a detail.
-    """
-    env = environ if environ is not None else os.environ
-    if explicit := env.get("HF_HUB_CACHE"):
-        return Path(explicit)
-    if home := env.get("HF_HOME"):
-        return Path(home) / "hub"
-    base = env.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "huggingface" / "hub"
-
-
-def cached_snapshot(root: Path, spec: ModelSpec) -> Path | None:
-    """The snapshot directory holding this exact revision, or ``None``.
-
-    Prefix-matched because :func:`check_revision` accepts a short digest for the same commit,
-    and a pin an operator shortened by hand should not read as absent.
-    """
-    folder = root / f"models--{spec.repo_id.replace('/', '--')}" / "snapshots"
-    if not folder.is_dir():
-        return None
-    for candidate in sorted(folder.iterdir()):
-        if candidate.name.startswith(spec.revision) and any(candidate.iterdir()):
-            return candidate
-    return None
 
 
 @dataclass(frozen=True, slots=True)
