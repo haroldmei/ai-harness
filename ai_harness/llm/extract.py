@@ -43,6 +43,46 @@ class Extraction:
         return self.rung is not Rung.NONE
 
 
+def escape_control_characters_in_strings(text: str) -> str:
+    """Escape raw newlines, tabs and carriage returns that appear *inside* JSON strings.
+
+    A model writing a multi-line code anchor emits the code as it reads — with real newlines
+    inside the string literal — which is invalid JSON. The ladder then falls through to whatever
+    partial object a bracket scan can salvage, and the schema complains about a field that was
+    never missing: the observed failure was ``summary: Field required`` on output whose first key
+    *was* ``summary``.
+
+    This is a repair of the *encoding*, never of the content: it walks the text in one pass,
+    tracks whether it is inside a string, and rewrites only the control characters that JSON
+    forbids there. Everything else — including the escaping the model got right, often in the
+    same string — is passed through untouched. The result still has to parse to count as a rung.
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if escaped:
+            out.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            out.append(char)
+            escaped = in_string
+            continue
+        if char == '"':
+            in_string = not in_string
+            out.append(char)
+            continue
+        if in_string and char in _CONTROL:
+            out.append(_CONTROL[char])
+            continue
+        out.append(char)
+    return "".join(out)
+
+
+_CONTROL = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
 def _try_parse(text: str) -> Any | None:
     stripped = text.strip()
     if not stripped:
@@ -127,6 +167,17 @@ def extract_json(text: str) -> Extraction:
         parsed = _try_parse(candidate)
         if parsed is not None:
             return Extraction(value=parsed, rung=Rung.BRACKET_SCAN, candidates_tried=tried)
+
+    # Last rung: the same candidates with their string literals re-escaped. Ordered last so a
+    # well-formed answer is never rewritten — the repair only ever runs on text that has already
+    # failed to parse as it stands, and it must still parse afterwards to count.
+    repaired = escape_control_characters_in_strings(text)
+    if repaired != text:
+        for candidate in [repaired, *_balanced_candidates(repaired)]:
+            tried += 1
+            parsed = _try_parse(candidate)
+            if parsed is not None:
+                return Extraction(value=parsed, rung=Rung.BRACKET_SCAN, candidates_tried=tried)
 
     return Extraction(value=None, rung=Rung.NONE, candidates_tried=tried)
 

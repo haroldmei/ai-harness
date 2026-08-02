@@ -166,6 +166,18 @@ def inspect(
             f"  {checkpoint.seq:>3}. {checkpoint.state.value:<10} → {checkpoint.next_state.value:<10}"
             f" {stage:<10} {checkpoint.result.get('outcome', '')}"
         )
+        # The error's own evidence, which was written to the ledger from the first checkpoint
+        # ever recorded and rendered by nothing. `call_structured` stores the exact validation
+        # complaint and the head of the model's output; this printed "error: validation" and
+        # dropped both, so the most common failure in the system was diagnosable only by
+        # hand-rolling a reproduction. It was never missing — it was never shown.
+        if checkpoint.error is not None:
+            typer.secho(f"       {checkpoint.error.message}", fg="red")
+            if checkpoint.error.remedy:
+                typer.echo(f"       remedy: {checkpoint.error.remedy}")
+            for key, value in sorted(checkpoint.error.details.items()):
+                rendered = str(value).replace("\n", "\n" + " " * 15)
+                typer.echo(f"       {key}: {rendered[:1500]}")
 
 
 @state_app.command("cost")

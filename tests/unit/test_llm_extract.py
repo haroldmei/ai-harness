@@ -66,3 +66,29 @@ def test_pretty_printed_bare_object() -> None:
 def test_nothing_parseable_reports_how_many_candidates_were_tried() -> None:
     result = extract_object("no json here at all")
     assert not result.found and result.candidates_tried >= 1
+
+
+def test_raw_newlines_inside_a_string_are_repaired_and_the_content_survives():
+    """The failure that escalated run 934f0a62 at IMPLEMENT.
+
+    A model writing a multi-line code anchor emits the code as it reads it — real newlines inside
+    the string literal — which is invalid JSON. The ladder then salvaged a partial object and the
+    schema reported `summary: Field required` on output whose first key was `summary`.
+    """
+    raw = '{"summary": "did a thing", "edits": [{"path": "a.js", "content": "one\ntwo"}]}'
+    result = extract_object(raw)
+
+    assert result.found
+    assert result.value["summary"] == "did a thing"
+    # Repaired, not mangled: the newline is still a newline in the decoded value.
+    assert result.value["edits"][0]["content"] == "one\ntwo"
+
+
+def test_well_formed_output_is_never_rewritten():
+    """The repair runs last, on text that has already failed to parse. A correct answer must
+    reach the caller byte-identical, or the ladder starts editing what the model got right."""
+    good = '{"summary": "s", "edits": [{"path": "a.js", "content": "one\\ntwo"}]}'
+    result = extract_object(good)
+
+    assert result.found and result.rung is Rung.RAW
+    assert result.value["edits"][0]["content"] == "one\ntwo"
