@@ -69,6 +69,15 @@ class ValidateSubgraph:
 
     runner: Any
     """Anything with ``run(...)`` and ``rerun(...)`` — the shell adapter or the Python runner."""
+    runner_for: Any = None
+    """``(ctx) -> runner``, when the runner depends on the run.
+
+    It always does in production: a gate suite must execute in *this run's worktree*, and a
+    runner bound once at startup carries whatever root the composition root had — the primary
+    checkout. That gates the wrong tree and reports green for a branch it never ran. Which
+    runner is also a per-tree question: a repository whose gates were discovered at rung 2 has
+    an entry point and no per-gate commands, so the native runner would report every gate as
+    "named but has no command"."""
     triager: Triager = field(default_factory=Triager)
     deployer: Any = None
     """An optional :class:`~ai_harness.deploy.subgraph.DeployStage`. Absent ⇒ never deployed."""
@@ -98,9 +107,10 @@ class ValidateSubgraph:
                     )
                 )
 
+        runner = self.runner_for(ctx) if self.runner_for is not None else self.runner
         report = ctx.cached_report
         if report is None:
-            outcome = await self.runner.run(
+            outcome = await runner.run(
                 gate_set=ctx.gate_set, commit_sha=ctx.head_sha, base_sha=ctx.base_sha
             )
             if outcome.is_err:
@@ -135,7 +145,7 @@ class ValidateSubgraph:
 
         # 3. Flake confirmation: only the gates that failed, and the answer is recorded.
         if ctx.confirm_flakes:
-            report = await self._confirm(report, ctx)
+            report = await self._confirm(report, ctx, runner)
             if report.green:
                 return await self._green_path(report, ctx, key, flaky=True)
 
@@ -154,12 +164,22 @@ class ValidateSubgraph:
             results.append(result.model_copy(update={"inherited": inherited or result.inherited}))
         return report.model_copy(update={"results": results})
 
-    async def _confirm(self, report: GateReport, ctx: ValidateContext) -> GateReport:
+    async def _confirm(
+        self, report: GateReport, ctx: ValidateContext, runner: Any | None = None
+    ) -> GateReport:
         """Re-run the failed gates once. Green on the confirmation ⇒ flake, and it is reported."""
         names = [r.name for r in report.failures]
         if not names:
             return report
-        rerun = await self.runner.rerun(report, names)
+        target = runner or self.runner
+        if not hasattr(target, "rerun"):
+            # A spine invoked through its own entry point cannot be asked to re-run one gate:
+            # `ShellGateAdapter` calls the repository's script and consumes its scorecard. No
+            # confirmation is then possible, and the honest response is to skip it — the failure
+            # stands as reported. Raising here would turn "we could not confirm a flake" into a
+            # crash that escalates a run whose gates merely went red.
+            return report
+        rerun = await target.rerun(report, names)
         if rerun.is_err:
             return report
         second = rerun.unwrap()

@@ -188,12 +188,21 @@ class ModelSlot:
         started = self.clock.monotonic()
         previous = self.resident
 
-        if previous is not None:
-            stopped = await self.units.stop(self._unit(previous))
-            if stopped.is_err:
+        # Evict by sweeping the registry, not by trusting `self.resident`. That attribute is
+        # per-process memory and residency is a fact about the *card*: every dispatch is a fresh
+        # process (§14.1), so the first acquire after a swap believes nothing is loaded, starts
+        # its model beside the one that is, and the new server dies on a card with 1 GB free —
+        # reported as "no serving endpoint", which reads as the model being down rather than
+        # never having come up. Stopping an inactive unit is a no-op, so the sweep is cheap and
+        # it is the same rule `Conflicts=` enforces one layer down.
+        for other in self.registry.models:
+            if other.name == spec.name:
+                continue
+            stopped = await self.units.stop(self._unit(other.name))
+            if stopped.is_err and other.name == previous:
                 assert stopped.error is not None
                 return Outcome.of(stopped.error)
-            self.resident = None
+        self.resident = None
 
         started_unit = await self.units.start(self._unit(spec.name))
         if started_unit.is_err:

@@ -339,6 +339,48 @@ MAX_BRIEF_FILE_BYTES = 60_000
 edit itself needs, and the anchored-edit path exists precisely so whole files need not travel."""
 
 
+def ground_plan(plan: Any, workspace: Path) -> tuple[Any, list[str]]:
+    """Rewrite a plan's paths onto files that actually exist. Returns ``(plan, notes)``.
+
+    An issue cites ``formFiller.js:837``; the file is at
+    ``browser-extension/modules/formFiller.js``; and the planner is given the issue and *nothing
+    about the repository*, so it writes down a plausible directory and the edit then fails with
+    "does not exist, so it cannot be edited by anchor". The model was not wrong so much as
+    uninformed, and the run dies at IMPLEMENT having spent a plan.
+
+    Resolution, not guessing — the distinction the anchor rule already draws. A path is rewritten
+    only when the basename matches **exactly one** file in the tree. Zero matches is a *create*,
+    which is legitimate and left alone; two or more is genuinely ambiguous and also left alone,
+    to fail loudly at the anchor rather than silently in the wrong file.
+    """
+    changes = list(getattr(plan, "changes", []) or [])
+    if not changes:
+        return plan, []
+
+    notes: list[str] = []
+    grounded = []
+    for change in changes:
+        path = str(getattr(change, "path", ""))
+        if not path or (workspace / path).exists():
+            grounded.append(change)
+            continue
+        matches = [
+            candidate
+            for candidate in workspace.rglob(Path(path).name)
+            if candidate.is_file() and ".git" not in candidate.parts
+        ]
+        if len(matches) != 1:
+            grounded.append(change)
+            continue
+        resolved = str(matches[0].relative_to(workspace))
+        notes.append(f"{path} → {resolved}")
+        grounded.append(change.model_copy(update={"path": resolved}))
+
+    if not notes:
+        return plan, []
+    return plan.model_copy(update={"changes": grounded}), notes
+
+
 def _files_named_by(plan: Any, workspace: Path) -> dict[str, str]:
     """Current contents of the files the plan intends to change.
 
@@ -399,15 +441,23 @@ def build_editor(
             workspace=workspace,
             repo=ctx.repo,
         )
+        plan, grounded = ground_plan(ctx.plan, workspace)
+        if grounded:
+            Logger().info(
+                "grounded the plan's paths against the worktree",
+                run_id=ctx.run_id,
+                resolved=grounded,
+                why="the issue cited a bare filename and the planner has no repository index",
+            )
         brief = ImplementerBrief(
-            plan=ctx.plan,
+            plan=plan,
             brief=ctx.brief,
             issue_title=ctx.issue_title,
             issue_body=ctx.issue_body,
             issue_number=ctx.issue_number,
             findings=tuple(ctx.findings),
             gate_failure=ctx.gate_failure,
-            current_files=_files_named_by(ctx.plan, workspace),
+            current_files=_files_named_by(plan, workspace),
         )
         return await implementer.editor(brief, run=getattr(ctx, "run_spend", None))(ctx)  # type: ignore[no-any-return]
 
@@ -506,15 +556,32 @@ def build_registry(
 
     # The discovery ladder decides the gate profile; an unresolvable one escalates rather than
     # silently running a weaker set (§19.2 rung 5), which is why the Discovery is kept whole.
-    discovery = discover(config.repo_path, tier=config.tier or Tier.LAUNCH)
+    #
+    # Discovered per *worktree*, not once here. Two things depend on the tree: the root the
+    # gates execute in — a runner bound to the primary checkout gates a branch it never saw —
+    # and which runner, because a rung-2 repository has an entry point and no per-gate commands.
+    def runner_for(ctx: Any) -> Any:
+        workspace = Path(ctx.workspace)
+        found = discover(workspace, tier=config.tier or Tier.LAUNCH)
+        if found.profile.entry_point is not None:
+            from ai_harness.quality.adapters.shell import ShellGateAdapter
+
+            return ShellGateAdapter(root=workspace, profile=found.profile)
+        return GateRunner(
+            root=workspace,
+            profile=found.profile,
+            project_prefix=config.profile.compose_project_prefix,
+        )
+
     registry.bind(
         State.VALIDATE,
         ValidateSubgraph(
             runner=GateRunner(
                 root=config.repo_path,
-                profile=discovery.profile,
+                profile=discover(config.repo_path, tier=config.tier or Tier.LAUNCH).profile,
                 project_prefix=config.profile.compose_project_prefix,
             ),
+            runner_for=runner_for,
             triager=triager,
         ),
     )

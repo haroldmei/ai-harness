@@ -82,7 +82,12 @@ async def test_two_models_are_never_resident_at_once():
     handle = (await slot.acquire("devstral-24b", run_id="r1")).unwrap()
     # The eviction happens before the load, in that order: starting the second model while the
     # first still holds 17 GB is the OOM this class exists to prevent.
+    # Every *other* model is stopped before the load, not merely the one this object remembers
+    # being resident. `self.resident` is per-process memory and residency is a fact about the
+    # card: a fresh worker process (every dispatch is one) would otherwise start its model beside
+    # a server it never knew about, and the new one dies on a full card.
     assert units.calls == [
+        "stop serve-devstral-24b",
         "start serve-qwen3-coder-30b",
         "stop serve-qwen3-coder-30b",
         "start serve-devstral-24b",
@@ -114,7 +119,9 @@ async def test_re_acquiring_the_resident_model_costs_nothing():
     again = (await slot.acquire("qwen3-coder-30b", run_id="r1")).unwrap()
 
     assert not again.swapped
-    assert units.calls == ["start serve-qwen3-coder-30b"]
+    # The second acquire adds nothing: what costs is the load, and it is already loaded. The
+    # leading stop belongs to the first acquire's sweep of the models it cannot see.
+    assert units.calls == ["stop serve-devstral-24b", "start serve-qwen3-coder-30b"]
     assert slot.swap_count("r1") == 1
 
 

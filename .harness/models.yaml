@@ -93,9 +93,13 @@ models:
     cap_max_model_len: 32768
     port: 8001
     roles: [reviewer, conflict_resolver]
-    # Same flag as the implementer, different reason. CUDA graph capture allocates pinned host
-    # memory, and under WSL2 that fails at initialisation:
-    #     RuntimeError: UVA is not available
-    # — with 22.5 GB free and nothing else resident, so it is not a memory problem and not a
-    # swap race. Every model on this host needs it; a bare-metal box may not.
-    extra_args: ["--enforce-eager"]
+    # `--enforce-eager` for the same reason as the implementer: this box cannot capture CUDA
+    # graphs within its memory budget.
+    #
+    # `--tokenizer-mode mistral` because this build ships Mistral-native files — `tekken.json`
+    # and `params.json`, with no `tokenizer_config.json` — so the HF tokenizer path has no chat
+    # template and every request is refused with a 400:
+    #     "As of transformers v4.44, default chat template is no longer allowed"
+    # A server that accepts connections and refuses every request is exactly what `agent serving
+    # check`'s one-token probe exists to catch, and it caught this.
+    extra_args: ["--enforce-eager", "--tokenizer-mode", "mistral"]
