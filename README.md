@@ -13,6 +13,8 @@ gates, and proposes the result — unattended, resumable, and bounded in dollars
   — the fourteen open questions of §27, answered.
 * **The runbook**: [`docs/runbooks/migration.md`](docs/runbooks/migration.md) — what must be true
   before each cutover, how to verify it, and how to get back.
+* **The manual**: [`docs/manual.md`](docs/manual.md) — how to install, configure, run and operate
+  `agent`, command by command, including what is not drivable yet.
 
 ## Status — Phases 0–7 are implemented
 
